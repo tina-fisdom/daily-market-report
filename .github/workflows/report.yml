@@ -10,6 +10,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Seoul          # '생성' 시각을 한국 시간으로 표시
     permissions:
       contents: write
     steps:
