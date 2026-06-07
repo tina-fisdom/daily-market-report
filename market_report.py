@@ -14,7 +14,9 @@
    한 곳이 실패해도 나머지 리포트는 정상 생성됩니다.
 """
 
+import csv
 import datetime
+import io
 import json
 import re
 
@@ -139,6 +141,137 @@ def us_top():
 
 
 # ──────────────────────────────────────────────
+# 보유종목 목표 매도가 (사용자 Google Sheet — 읽기 전용)
+# 규칙: A열 텍스트 = 종목 블록 시작 / 2026년 이후 거래만 /
+#       매도예정가(I열) 빈칸 무시 / 같은 인격이 이후 매도했으면 그 lot 제외
+# ──────────────────────────────────────────────
+TARGET_SHEET_ID = "1qj-FAIVW9Umdlg61675nJJ9PNilZ61qvYwb5TBDQtNk"
+TARGET_SHEET_GID = "0"
+TARGET_SINCE = datetime.date(2026, 1, 1)
+
+# 종목명 → (시세조회 키, 통화). 'us'/'btc'=yfinance, 'kr'=네이버 종목코드
+TICKER_MAP = {
+    "TQQQ": ("TQQQ", "us"),
+    "비트코인": ("BTC-KRW", "btc"),
+    "KODEX코스닥150": ("229200", "kr"),
+    "코스닥150": ("229200", "kr"),
+    "KODEX코스닥150레버리지": ("233740", "kr"),
+    "코스닥150레버리지": ("233740", "kr"),
+    "맥쿼리인프라": ("088980", "kr"),
+    "동서": ("026960", "kr"),
+    "KODEX200타겟위클리커버드콜": ("498400", "kr"),
+}
+
+
+def _parse_date(s):
+    s = str(s).strip().replace(".", "-").replace("/", "-")
+    m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", s)
+    if not m:
+        return None
+    try:
+        return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def resolve_ticker(name):
+    """종목명 → (키, 통화구분). 미등록이면 네이버 자동완성으로 탐색, 실패 시 None."""
+    key = re.sub(r"\s+", "", name).upper()
+    m = re.search(r"\((\d{6})\)", name)
+    if m:
+        return m.group(1), "kr"
+    for k, v in TICKER_MAP.items():
+        if k.upper() == key:
+            return v
+    try:
+        import urllib.parse
+        q = urllib.parse.quote(name)
+        j = naver_json(f"https://ac.stock.naver.com/ac?q={q}&target=stock")
+        items = j.get("items") or []
+        if items and items[0].get("nationCode") == "KOR":
+            return items[0]["code"], "kr"
+    except Exception as e:
+        print("종목 탐색 실패:", name, e)
+    return None
+
+
+def fetch_targets():
+    """시트에서 미체결 목표 매도 lot 추출: {종목명: [{qty, target}]}."""
+    url = (f"https://docs.google.com/spreadsheets/d/{TARGET_SHEET_ID}"
+           f"/export?format=csv&gid={TARGET_SHEET_GID}")
+    r = NAVER.get(url, timeout=20)
+    r.raise_for_status()
+    rows = list(csv.reader(io.StringIO(r.content.decode("utf-8"))))
+
+    blocks = {}          # 종목명 → [(행번호, 인격, 수량, 목표가)]
+    sells = {}           # 종목명 → [(행번호, 인격)]
+    current = None
+    HEADER_LABELS = {"월", "연월", "년도", "일자"}
+    for i, row in enumerate(rows):
+        a = (row[0].strip() if row else "")
+        b = (row[1].strip() if len(row) > 1 else "")
+        if a and not a[0].isdigit():
+            # 거래 표의 컬럼 헤더 행("월,일자,…")은 마커가 아님 — 블록 유지
+            if a in HEADER_LABELS or b in ("일자", "날짜"):
+                continue
+            current = a                          # 종목 블록 마커
+            continue
+        if current is None or len(row) < 9:
+            continue
+        d = _parse_date(row[1] if len(row) > 1 else "")
+        if d is None or d < TARGET_SINCE:
+            continue
+        trade = (row[5] if len(row) > 5 else "").strip()
+        persona = (row[4] if len(row) > 4 else "").strip()
+        if "매도" in trade and persona:
+            sells.setdefault(current, []).append((i, persona))
+        if "매수" not in trade:
+            continue
+        sell_target = (row[8] if len(row) > 8 else "").strip()
+        if not sell_target:
+            continue
+        try:
+            qty = abs(num(row[3]))
+            target = num(sell_target.replace("₩", "").replace("$", ""))
+        except Exception:
+            continue
+        blocks.setdefault(current, []).append((i, persona, qty, target))
+
+    # 같은 인격이 lot 이후에 매도했으면 제외 (이미 체결된 자리)
+    out = {}
+    for name, lots in blocks.items():
+        keep = []
+        for (i, persona, qty, target) in lots:
+            sold_later = persona and any(
+                si > i and sp == persona for si, sp in sells.get(name, []))
+            if not sold_later:
+                keep.append({"qty": qty, "target": target})
+        if keep:
+            out[name] = sorted(keep, key=lambda x: x["target"])
+    return out
+
+
+def fetch_target_prices(targets):
+    """목표 추적 종목들의 (전일 종가, 등락률, 통화) 조회: {종목명: (last, pct, cur)}."""
+    prices = {}
+    for name in targets:
+        rt = resolve_ticker(name)
+        if not rt:
+            continue
+        key, kind = rt
+        try:
+            if kind == "kr":
+                s = naver_stock(key)
+                prices[name] = (s["price"], s["pct"], "₩")
+            else:
+                last, pct = prev_change(yf_close(key))
+                prices[name] = (last, pct, "$" if kind == "us" else "₩")
+        except Exception as e:
+            print("목표종목 시세 실패:", name, e)
+    return prices
+
+
+# ──────────────────────────────────────────────
 # 교차 검증 (yfinance ↔ 네이버, 같은 날짜끼리 대조)
 # ──────────────────────────────────────────────
 def naver_index_last(code, world=False):
@@ -255,6 +388,49 @@ def stocks_html(rows, krw=True):
         out.append(f'<div class="stk"><span>{r["name"]}</span>'
                    f'<span>{price} {sign(r["pct"])}</span></div>')
     return "".join(out)
+
+
+def fmt_money(v, cur):
+    return f"${v:,.2f}" if cur == "$" else f"{v:,.0f}원"
+
+
+def targets_card(targets, prices):
+    """보유종목 목표 매도가 카드 HTML과 도달 배너 HTML 반환."""
+    if not targets:
+        return "", ""
+    stocks_html_parts, hits = [], []
+    for name, lots in targets.items():
+        p = prices.get(name)
+        if p:
+            last, pct, cur = p
+            head_val = f"전일 종가 {fmt_money(last, cur)} {sign(pct)}"
+        else:
+            last, cur = None, "₩"
+            head_val = "시세 조회 실패"
+        rows = []
+        for lot in lots:
+            qty_txt = f"{lot['qty']:,.4f}".rstrip("0").rstrip(".") if lot["qty"] < 1 \
+                else f"{lot['qty']:,.0f}"
+            unit = " BTC" if "비트코인" in name else "주"
+            left = f"{qty_txt}{unit} → {fmt_money(lot['target'], cur)} 이상 매도"
+            if last is not None:
+                rate = last / lot["target"] * 100
+                hit = last >= lot["target"]
+                right = f"달성률 {rate:.1f}%" + (" ✅ 도달" if hit else "")
+                if hit:
+                    hits.append(f"{name} {fmt_money(lot['target'], cur)} ({qty_txt}{unit})")
+            else:
+                right, hit = "—", False
+            rows.append(f'<div class="tgt-row{" hit" if hit else ""}">'
+                        f'<span>{left}</span><span>{right}</span></div>')
+        stocks_html_parts.append(
+            f'<div class="tgt-stock"><div class="tgt-head"><span>{name}</span>'
+            f'<span>{head_val}</span></div>{"".join(rows)}</div>')
+    card = (f'<div class="card chart-card"><h2>🎯 보유종목 목표 매도가</h2>'
+            f'{"".join(stocks_html_parts)}</div>')
+    banner = (f'<div class="vbanner vhit">🎯 목표가 도달: {" · ".join(hits)}</div>'
+              if hits else "")
+    return card, banner
 
 
 def validation_banner(checks):
@@ -374,6 +550,14 @@ def build_html():
     except Exception as e:
         print("TQQQ 실패:", e)
 
+    # ── 보유종목 목표 매도가 (시트 읽기 실패 시 섹션 생략) ──
+    try:
+        targets = fetch_targets()
+        tgt_card, tgt_banner = targets_card(targets, fetch_target_prices(targets))
+    except Exception as e:
+        print("목표가 시트 조회 실패:", e)
+        tgt_card, tgt_banner = "", ""
+
     chart_json = json.dumps(build_chart_payload(), ensure_ascii=False)
     banner = validation_banner(checks)
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -388,6 +572,11 @@ def build_html():
  h1{{font-size:22px;margin:0 0 4px}} .stamp{{color:#888;font-size:13px;margin-bottom:10px}}
  .vbanner{{display:inline-block;font-size:13px;padding:6px 12px;border-radius:8px;margin-bottom:20px}}
  .vok{{background:#e8f5ec;color:#1d7a3d}} .vwarn{{background:#fdf0e0;color:#a05c00}}
+ .vhit{{background:#fff3cd;color:#8a6100;font-weight:700;margin-left:6px}}
+ .tgt-stock{{margin-bottom:18px}} .tgt-stock:last-child{{margin-bottom:0}}
+ .tgt-head{{display:flex;justify-content:space-between;font-weight:700;font-size:15px;padding:8px 0;border-bottom:1px solid #e8e8ee}}
+ .tgt-row{{display:flex;justify-content:space-between;font-size:14px;padding:7px 0 7px 12px;border-bottom:1px solid #f5f5f8;color:#444}}
+ .tgt-row.hit{{background:#fff8e1;font-weight:700;color:#8a6100;border-radius:6px}}
  .grid{{display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:840px}}
  .card{{background:#fff;border-radius:16px;padding:24px;box-shadow:0 2px 10px rgba(0,0,0,.05)}}
  .card h2{{font-size:17px;margin:0 0 16px;padding-bottom:10px;border-bottom:2px solid #2c5fd0}}
@@ -401,11 +590,12 @@ def build_html():
 </style></head><body>
 <h1>📊 일일 시장 리포트</h1>
 <div class="stamp">생성 {stamp} · {kr_date} 영업일 기준 · 등락률은 전일 대비</div>
-{banner}
+{banner}{tgt_banner}
 <div class="grid">
   <div class="card"><h2>🇰🇷 국내 코스피시장</h2><ul>{''.join(parts_kr)}</ul></div>
   <div class="card"><h2>🇺🇸 미국 나스닥시장</h2><ul>{''.join(parts_us)}</ul></div>
   <div class="card chart-card"><h2>📈 최근 1개월 추이 (시작일=100)</h2><canvas id="trend"></canvas></div>
+  {tgt_card}
 </div>
 <script>
 const CHART_DATA = {chart_json};
