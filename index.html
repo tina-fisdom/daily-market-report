@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>일일 시장 리포트</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+ body{font-family:'Pretendard',system-ui,sans-serif;background:#f5f6f8;color:#1a1a2e;margin:0;padding:32px}
+ h1{font-size:22px;margin:0 0 4px} .stamp{color:#888;font-size:13px;margin-bottom:10px}
+ .vbanner{display:inline-block;font-size:13px;padding:6px 12px;border-radius:8px;margin-bottom:20px}
+ .vok{background:#e8f5ec;color:#1d7a3d} .vwarn{background:#fdf0e0;color:#a05c00}
+ .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:840px}
+ .card{background:#fff;border-radius:16px;padding:24px;box-shadow:0 2px 10px rgba(0,0,0,.05)}
+ .card h2{font-size:17px;margin:0 0 16px;padding-bottom:10px;border-bottom:2px solid #2c5fd0}
+ ul{list-style:none;margin:0;padding:0} li{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid #f0f0f3;font-size:14px}
+ .lbl{color:#555;white-space:nowrap} .val{font-weight:600;text-align:right}
+ .up{color:#d23f3f} .down{color:#2c5fd0} .warn{cursor:help}
+ .noteline{padding:4px 0 9px} .note{color:#999;font-size:12px;font-weight:400;line-height:1.5;text-align:left}
+ .stk{display:flex;justify-content:space-between;gap:14px} .stk span:first-child{font-weight:500;color:#333}
+ .chart-card{grid-column:1/-1} .chart-card canvas{max-height:340px}
+ @media(max-width:680px){.grid{grid-template-columns:1fr}}
+</style></head><body>
+<h1>📊 일일 시장 리포트</h1>
+<div class="stamp">생성 2026-06-07 13:11 · 2026-06-05 영업일 기준 · 등락률은 전일 대비</div>
+<div class="vbanner vok">✅ 데이터 교차검증 통과 (3건)</div>
+<div class="grid">
+  <div class="card"><h2>🇰🇷 국내 코스피시장</h2><ul><li><span class="lbl">KOSPI</span><span class="val">8,160.59 <span class="down">▼ 5.54%</span></span></li><li><span class="lbl">국고채 3년</span><span class="val">3.88%</span></li><li><span class="lbl">단기금리 CD(91일)</span><span class="val">2.88%</span></li><li><span class="lbl">원/달러 환율</span><span class="val">1,558.8 <span class="up">▲ 1.68%</span></span></li><li><span class="lbl">거래량 상위 3</span><span class="val"><div class="stk"><span>SK증권</span><span>3,205 <span class="up">▲ 0.16%</span></span></div><div class="stk"><span>삼성전자</span><span>329,000 <span class="down">▼ 6.40%</span></span></div><div class="stk"><span>티웨이홀딩스</span><span>277 <span class="down">▼ 12.62%</span></span></div></span></li><li><span class="lbl">시총 상위 3</span><span class="val"><div class="stk"><span>삼성전자</span><span>329,000 <span class="down">▼ 6.40%</span></span></div><div class="stk"><span>SK하이닉스</span><span>2,070,000 <span class="down">▼ 9.92%</span></span></div><div class="stk"><span>삼성전자우</span><span>211,000 <span class="down">▼ 4.09%</span></span></div></span></li></ul></div>
+  <div class="card"><h2>🇺🇸 미국 나스닥시장</h2><ul><li><span class="lbl">나스닥 종합</span><span class="val">25,709.43 <span class="down">▼ 4.18%</span></span></li><li><span class="lbl">공포지수(VIX)</span><span class="val">21.51 <span class="up">▲ 39.68%</span></span></li><li class="noteline"><span class="note">VIX는 S&P500 옵션 가격으로 산출한 향후 30일 예상 변동성으로, 투자자 불안 심리를 나타냅니다. 통상 20 미만이면 안정, 30 이상이면 공포 구간으로 봅니다.</span></li><li><span class="lbl">미 국채 3개월</span><span class="val">3.62%</span></li><li><span class="lbl">미 국채 10년</span><span class="val">4.54%</span></li><li><span class="lbl">달러인덱스(DXY)</span><span class="val">100.07</span></li><li><span class="lbl">거래량 상위 3</span><span class="val"><div class="stk"><span>NVDA</span><span>$205.10 <span class="down">▼ 5.18%</span></span></div><div class="stk"><span>AAPL</span><span>$307.34 <span class="down">▼ 1.05%</span></span></div><div class="stk"><span>TSLA</span><span>$391.00 <span class="down">▼ 6.05%</span></span></div></span></li><li><span class="lbl">시총 상위 3</span><span class="val"><div class="stk"><span>NVDA</span><span>$205.10 <span class="down">▼ 5.18%</span></span></div><div class="stk"><span>AAPL</span><span>$307.34 <span class="down">▼ 1.05%</span></span></div><div class="stk"><span>GOOGL</span><span>$368.53 <span class="down">▼ 0.59%</span></span></div></span></li></ul></div>
+  <div class="card chart-card"><h2>📈 최근 1개월 추이 (시작일=100)</h2><canvas id="trend"></canvas></div>
+</div>
+<script>
+const CHART_DATA = {"labels": ["2026-05-06", "2026-05-07", "2026-05-08", "2026-05-11", "2026-05-12", "2026-05-13", "2026-05-14", "2026-05-15", "2026-05-18", "2026-05-19", "2026-05-20", "2026-05-21", "2026-05-22", "2026-05-26", "2026-05-27", "2026-05-28", "2026-05-29", "2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05"], "datasets": [{"label": "KOSPI", "data": [{"x": "2026-05-06", "y": 100.0}, {"x": "2026-05-07", "y": 101.43}, {"x": "2026-05-08", "y": 101.54}, {"x": "2026-05-11", "y": 105.93}, {"x": "2026-05-12", "y": 103.5}, {"x": "2026-05-13", "y": 106.22}, {"x": "2026-05-14", "y": 108.08}, {"x": "2026-05-15", "y": 101.47}, {"x": "2026-05-18", "y": 101.78}, {"x": "2026-05-19", "y": 98.47}, {"x": "2026-05-20", "y": 97.62}, {"x": "2026-05-21", "y": 105.84}, {"x": "2026-05-22", "y": 106.27}, {"x": "2026-05-26", "y": 108.98}, {"x": "2026-05-27", "y": 111.43}, {"x": "2026-05-28", "y": 110.84}, {"x": "2026-05-29", "y": 114.78}, {"x": "2026-06-01", "y": 119.01}, {"x": "2026-06-02", "y": 119.19}, {"x": "2026-06-04", "y": 116.99}, {"x": "2026-06-05", "y": 110.51}], "borderColor": "#d23f3f", "backgroundColor": "#d23f3f", "tension": 0.2, "pointRadius": 0, "borderWidth": 2, "spanGaps": true}, {"label": "나스닥", "data": [{"x": "2026-05-06", "y": 100.0}, {"x": "2026-05-07", "y": 99.87}, {"x": "2026-05-08", "y": 101.58}, {"x": "2026-05-11", "y": 101.68}, {"x": "2026-05-12", "y": 100.96}, {"x": "2026-05-13", "y": 102.18}, {"x": "2026-05-14", "y": 103.08}, {"x": "2026-05-15", "y": 101.49}, {"x": "2026-05-18", "y": 100.97}, {"x": "2026-05-19", "y": 100.12}, {"x": "2026-05-20", "y": 101.67}, {"x": "2026-05-21", "y": 101.76}, {"x": "2026-05-22", "y": 101.95}, {"x": "2026-05-26", "y": 103.16}, {"x": "2026-05-27", "y": 103.23}, {"x": "2026-05-28", "y": 104.17}, {"x": "2026-05-29", "y": 104.39}, {"x": "2026-06-01", "y": 104.83}, {"x": "2026-06-02", "y": 104.86}, {"x": "2026-06-03", "y": 103.93}, {"x": "2026-06-04", "y": 103.84}, {"x": "2026-06-05", "y": 99.5}], "borderColor": "#2c5fd0", "backgroundColor": "#2c5fd0", "tension": 0.2, "pointRadius": 0, "borderWidth": 2, "spanGaps": true}]};
+new Chart(document.getElementById('trend'), {
+  type: 'line',
+  data: CHART_DATA,
+  options: {
+    responsive: true,
+    interaction: {mode: 'index', intersect: false},
+    scales: {
+      x: {type: 'category', ticks: {maxTicksLimit: 10}},
+      y: {title: {display: true, text: '상대지수 (시작일=100)'}}
+    },
+    plugins: {legend: {position: 'top'}}
+  }
+});
+</script>
+</body></html>

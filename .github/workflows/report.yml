@@ -1,0 +1,32 @@
+name: market-report
+
+on:
+  schedule:
+    # 22:00 UTC = 익일 07:00 KST. 월~금(UTC) 실행 = 한국 화~토 아침.
+    # 한국장 마감(15:30 KST)·미국장 마감(05~06시 KST)이 모두 반영된 시점.
+    - cron: "0 22 * * 1-5"
+  workflow_dispatch:        # 깃허브에서 수동 실행 버튼
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - run: python market_report.py
+
+      - name: commit & push
+        run: |
+          git config user.name  "github-actions"
+          git config user.email "actions@github.com"
+          git add index.html
+          git commit -m "일일 시장 리포트 갱신" || echo "변경 없음"
+          git push
