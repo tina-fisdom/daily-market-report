@@ -94,6 +94,13 @@ def kr_top_volume():
     return picked
 
 
+def naver_stock(code):
+    """네이버 종목 기본정보: {name, price, pct}. 예: 498400(KODEX 200타겟위클리커버드콜)."""
+    j = naver_json(f"https://m.stock.naver.com/api/stock/{code}/basic")
+    return {"name": j["stockName"], "price": num(j["closePrice"]),
+            "pct": num(j["fluctuationsRatio"])}
+
+
 def kr_rate(marketindex_cd):
     """네이버 시장지표 금리(%) 최신값. 예: IRR_GOVT03Y(국고채 3년), IRR_CD91(CD 91일).
     ※ 국고채 1년/10년물은 네이버 미제공 — 단기금리는 CD 91일물로 대체."""
@@ -321,6 +328,12 @@ def build_html():
         parts_kr.append(li("시총 상위 3", stocks_html(kr_top_cap())))
     except Exception as e:
         parts_kr.append(li("시총 상위 3", f"조회 실패 ({e})"))
+    try:
+        k = naver_stock("498400")            # KODEX 200타겟위클리커버드콜
+        parts_kr.append(li("KODEX 200타겟위클리커버드콜",
+                           f"{k['price']:,.0f} {sign(k['pct'])}"))
+    except Exception as e:
+        print("KODEX 커버드콜 실패:", e)
 
     # ── 미국 나스닥시장 ──
     try:
@@ -355,6 +368,11 @@ def build_html():
         parts_us.append(li("시총 상위 3", stocks_html(tc, krw=False)))
     except Exception as e:
         parts_us.append(li("상위 종목", f"조회 실패 ({e})"))
+    try:
+        tqqq_last, tqqq_pct = prev_change(yf_close("TQQQ"))
+        parts_us.append(li("TQQQ (나스닥100 3배)", f"${tqqq_last:,.2f} {sign(tqqq_pct)}"))
+    except Exception as e:
+        print("TQQQ 실패:", e)
 
     chart_json = json.dumps(build_chart_payload(), ensure_ascii=False)
     banner = validation_banner(checks)
