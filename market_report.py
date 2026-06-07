@@ -196,7 +196,9 @@ def resolve_ticker(name):
 
 
 def fetch_targets():
-    """시트에서 미체결 목표 매도 lot 추출: {종목명: [{qty, target}]}."""
+    """시트에서 목표 lot 추출: {종목명: {"sell": [{qty, target}], "buy": [{qty, target}]}}.
+    sell = 2026+ 매수 행 중 매도예정가(I열) 있는 미체결 lot
+    buy  = B열이 '목표매수가'인 행 (C열=가격, D열=수량)"""
     url = (f"https://docs.google.com/spreadsheets/d/{TARGET_SHEET_ID}"
            f"/export?format=csv&gid={TARGET_SHEET_GID}")
     r = NAVER.get(url, timeout=20)
@@ -205,6 +207,7 @@ def fetch_targets():
 
     blocks = {}          # 종목명 → [(행번호, 인격, 수량, 목표가)]
     sells = {}           # 종목명 → [(행번호, 인격)]
+    buys = {}            # 종목명 → [{qty, target}]
     current = None
     HEADER_LABELS = {"월", "연월", "년도", "일자"}
     for i, row in enumerate(rows):
@@ -216,7 +219,17 @@ def fetch_targets():
                 continue
             current = a                          # 종목 블록 마커
             continue
-        if current is None or len(row) < 9:
+        if current is None:
+            continue
+        if "목표매수가" in b:                     # 목표 매수가 행: C=가격, D=수량
+            try:
+                price = num(row[2].replace("₩", "").replace("$", ""))
+                qty = abs(num(row[3]))
+                buys.setdefault(current, []).append({"qty": qty, "target": price})
+            except Exception as e:
+                print("목표매수가 행 파싱 실패:", current, e)
+            continue
+        if len(row) < 9:
             continue
         d = _parse_date(row[1] if len(row) > 1 else "")
         if d is None or d < TARGET_SINCE:
@@ -247,7 +260,11 @@ def fetch_targets():
             if not sold_later:
                 keep.append({"qty": qty, "target": target})
         if keep:
-            out[name] = sorted(keep, key=lambda x: x["target"])
+            out.setdefault(name, {"sell": [], "buy": []})["sell"] = \
+                sorted(keep, key=lambda x: x["target"])
+    for name, lots in buys.items():
+        out.setdefault(name, {"sell": [], "buy": []})["buy"] = \
+            sorted(lots, key=lambda x: x["target"], reverse=True)
     return out
 
 
@@ -395,11 +412,11 @@ def fmt_money(v, cur):
 
 
 def targets_card(targets, prices):
-    """보유종목 목표 매도가 카드 HTML과 도달 배너 HTML 반환."""
+    """보유종목 목표 매도/매수가 카드 HTML과 도달 배너 HTML 반환."""
     if not targets:
         return "", ""
     stocks_html_parts, hits = [], []
-    for name, lots in targets.items():
+    for name, sides in targets.items():
         p = prices.get(name)
         if p:
             last, pct, cur = p
@@ -407,26 +424,38 @@ def targets_card(targets, prices):
         else:
             last, cur = None, "₩"
             head_val = "시세 조회 실패"
+        unit = " BTC" if "비트코인" in name else "주"
         rows = []
-        for lot in lots:
+
+        def lot_row(lot, side):
             qty_txt = f"{lot['qty']:,.4f}".rstrip("0").rstrip(".") if lot["qty"] < 1 \
                 else f"{lot['qty']:,.0f}"
-            unit = " BTC" if "비트코인" in name else "주"
-            left = f"{qty_txt}{unit} → {fmt_money(lot['target'], cur)} 이상 매도"
+            if side == "sell":
+                left = f"{qty_txt}{unit} → {fmt_money(lot['target'], cur)} 이상 매도"
+            else:
+                left = f"{qty_txt}{unit} → {fmt_money(lot['target'], cur)} 이하 매수"
             if last is not None:
-                rate = last / lot["target"] * 100
-                hit = last >= lot["target"]
+                if side == "sell":
+                    rate, hit = last / lot["target"] * 100, last >= lot["target"]
+                else:
+                    rate, hit = lot["target"] / last * 100, last <= lot["target"]
                 right = f"달성률 {rate:.1f}%" + (" ✅ 도달" if hit else "")
                 if hit:
-                    hits.append(f"{name} {fmt_money(lot['target'], cur)} ({qty_txt}{unit})")
+                    word = "매도" if side == "sell" else "매수"
+                    hits.append(f"{name} {word} {fmt_money(lot['target'], cur)} ({qty_txt}{unit})")
             else:
                 right, hit = "—", False
-            rows.append(f'<div class="tgt-row{" hit" if hit else ""}">'
-                        f'<span>{left}</span><span>{right}</span></div>')
+            return (f'<div class="tgt-row{" hit" if hit else ""}">'
+                    f'<span>{left}</span><span>{right}</span></div>')
+
+        for lot in sides.get("sell", []):
+            rows.append(lot_row(lot, "sell"))
+        for lot in sides.get("buy", []):
+            rows.append(lot_row(lot, "buy"))
         stocks_html_parts.append(
             f'<div class="tgt-stock"><div class="tgt-head"><span>{name}</span>'
             f'<span>{head_val}</span></div>{"".join(rows)}</div>')
-    card = (f'<div class="card chart-card"><h2>🎯 보유종목 목표 매도가</h2>'
+    card = (f'<div class="card chart-card"><h2>🎯 보유종목 목표 매도·매수가</h2>'
             f'{"".join(stocks_html_parts)}</div>')
     banner = (f'<div class="vbanner vhit">🎯 목표가 도달: {" · ".join(hits)}</div>'
               if hits else "")
