@@ -445,7 +445,8 @@ def targets_card(targets, prices):
                     hits.append(f"{name} {word} {fmt_money(lot['target'], cur)} ({qty_txt}{unit})")
             else:
                 right, hit = "—", False
-            return (f'<div class="tgt-row{" hit" if hit else ""}">'
+            cls = "tgt-row" + (" buy" if side == "buy" else "") + (" hit" if hit else "")
+            return (f'<div class="{cls}">'
                     f'<span>{left}</span><span>{right}</span></div>')
 
         for lot in sides.get("sell", []):
@@ -606,6 +607,7 @@ def build_html():
  .tgt-head{{display:flex;justify-content:space-between;font-weight:700;font-size:15px;padding:8px 0;border-bottom:1px solid #e8e8ee}}
  .tgt-row{{display:flex;justify-content:space-between;font-size:14px;padding:7px 0 7px 12px;border-bottom:1px solid #f5f5f8;color:#444}}
  .tgt-row.hit{{background:#fff8e1;font-weight:700;color:#8a6100;border-radius:6px}}
+ .tgt-row.buy{{color:#d23f3f}} .tgt-row.buy .up,.tgt-row.buy .down{{color:inherit}}
  .grid{{display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:840px}}
  .card{{background:#fff;border-radius:16px;padding:24px;box-shadow:0 2px 10px rgba(0,0,0,.05)}}
  .card h2{{font-size:17px;margin:0 0 16px;padding-bottom:10px;border-bottom:2px solid #2c5fd0}}
