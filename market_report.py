@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-일일 시장 리포트 생성기 (국내 코스피 / 미국 나스닥)
+일일 시장 리포트 생성기 (간소화 버전)
+- 핵심: 🎯 보유종목 목표 매도·매수가 추적 (Google Sheet 읽기 전용)
+- 보조 지표: 국고채 3년·CD 91일, 원/달러 환율, KODEX 커버드콜 /
+            VIX, 미 국채 3개월·10년, 달러인덱스, TQQQ
 - 등락률: 전일(직전 영업일) 대비
-- 거래량/시총 상위 3: 가장 최근 영업일 기준, 현재가·등락률 포함
-- 교차 검증: 핵심 수치(코스피/나스닥/환율)를 yfinance ↔ 네이버 두 소스에서 대조
+- 교차 검증: 원/달러 환율을 yfinance ↔ 네이버 두 소스에서 대조
   → 오차 초과 시 ⚠️ 표시 후 그대로 게시 (게시 중단 없음)
 - 결과물: index.html  (GitHub Pages가 그대로 게시)
 
 실행: python market_report.py
-※ 2025-12-27부터 KRX 정보데이터시스템이 로그인 필수로 바뀌어 pykrx 대신
-   yfinance(^KS11) + 네이버 금융 공개 API를 사용합니다.
 ※ 데이터 소스는 외부 서버라 항목별로 try/except로 감쌌습니다.
    한 곳이 실패해도 나머지 리포트는 정상 생성됩니다.
 """
@@ -17,7 +17,6 @@
 import csv
 import datetime
 import io
-import json
 import re
 
 import requests
@@ -57,45 +56,9 @@ def yf_last(ticker):
     return float(yf_close(ticker).iloc[-1])
 
 
-def yf_series_month(ticker):
-    """차트용: 최근 1개월 (날짜 리스트, 종가 리스트)."""
-    close = yf_close(ticker, period="1mo")
-    dates = [d.strftime("%Y-%m-%d") for d in close.index]
-    return dates, [float(v) for v in close]
-
-
 # ──────────────────────────────────────────────
-# 국내장 (코스피) — 네이버 금융 공개 API
+# 국내 보조지표 — 네이버 금융 공개 API
 # ──────────────────────────────────────────────
-def kr_top_cap():
-    """시총 상위 3 (KOSPI): [{name, price, pct}]."""
-    j = naver_json("https://m.stock.naver.com/api/stocks/marketValue/KOSPI?page=1&pageSize=3")
-    return [{"name": s["stockName"], "price": num(s["closePrice"]),
-             "pct": num(s["fluctuationsRatio"])} for s in j["stocks"]]
-
-
-def kr_top_volume():
-    """거래량 상위 3 (KOSPI, ETF/ETN/스팩 제외 일반주만): [{name, price, pct}]."""
-    r = NAVER.get("https://finance.naver.com/sise/sise_quant.naver?sosok=0", timeout=15)
-    r.raise_for_status()
-    r.encoding = "euc-kr"
-    codes = re.findall(r'<a href="/item/main\.naver\?code=(\d{6})"[^>]*>[^<]+</a>', r.text)
-
-    picked = []
-    for code in codes[:20]:                      # 상위 20개 안에서 일반주 3개 탐색
-        try:
-            j = naver_json(f"https://m.stock.naver.com/api/stock/{code}/basic")
-        except Exception:
-            continue
-        if j.get("stockEndType") != "stock":     # ETF/ETN 등 제외
-            continue
-        picked.append({"name": j["stockName"], "price": num(j["closePrice"]),
-                       "pct": num(j["fluctuationsRatio"])})
-        if len(picked) == 3:
-            break
-    return picked
-
-
 def naver_stock(code):
     """네이버 종목 기본정보: {name, price, pct}. 예: 498400(KODEX 200타겟위클리커버드콜)."""
     j = naver_json(f"https://m.stock.naver.com/api/stock/{code}/basic")
@@ -112,32 +75,6 @@ def kr_rate(marketindex_cd):
     r.encoding = "euc-kr"
     nums = re.findall(r'<td class="num">([\d.]+)</td>', r.text)
     return float(nums[0]) if nums else None
-
-
-# ──────────────────────────────────────────────
-# 미국장 (나스닥)
-# ──────────────────────────────────────────────
-# 시총 상위는 거의 고정이므로 메가캡 유니버스에서 산출. (전부 나스닥 상장)
-US_UNIVERSE = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AVGO"]
-
-
-def us_top():
-    rows = []
-    for t in US_UNIVERSE:
-        try:
-            info = yf.Ticker(t).fast_info
-            last = float(getattr(info, "last_price", 0) or 0)
-            prev = float(getattr(info, "previous_close", 0) or 0)
-            rows.append({"name": t,
-                         "cap": float(getattr(info, "market_cap", 0) or 0),
-                         "vol": float(getattr(info, "last_volume", 0) or 0),
-                         "price": last,
-                         "pct": (last / prev - 1) * 100 if prev else 0.0})
-        except Exception as e:
-            print(t, "조회 실패:", e)
-    top_vol = sorted(rows, key=lambda r: r["vol"], reverse=True)[:3]
-    top_cap = sorted(rows, key=lambda r: r["cap"], reverse=True)[:3]
-    return top_vol, top_cap
 
 
 # ──────────────────────────────────────────────
@@ -198,7 +135,7 @@ def resolve_ticker(name):
 def fetch_targets():
     """시트에서 목표 lot 추출: {종목명: {"sell": [{qty, target}], "buy": [{qty, target}]}}.
     sell = 2026+ 매수 행 중 매도예정가(I열) 있는 미체결 lot
-    buy  = B열이 '목표매수가'인 행 (C열=가격, D열=수량)"""
+    buy  = B열이 '목표매수가'인 행 (C열=가격, D열=수량, 수량은 없을 수 있음)"""
     url = (f"https://docs.google.com/spreadsheets/d/{TARGET_SHEET_ID}"
            f"/export?format=csv&gid={TARGET_SHEET_GID}")
     r = NAVER.get(url, timeout=20)
@@ -221,13 +158,20 @@ def fetch_targets():
             continue
         if current is None:
             continue
-        if "목표매수가" in b:                     # 목표 매수가 행: C=가격, D=수량
+        if "목표매수가" in b:                     # 목표 매수가 행: C=가격, D=수량(선택)
             try:
-                price = num(row[2].replace("₩", "").replace("$", ""))
-                qty = abs(num(row[3]))
-                buys.setdefault(current, []).append({"qty": qty, "target": price})
+                price = num(str(row[2]).replace("₩", "").replace("$", ""))
             except Exception as e:
-                print("목표매수가 행 파싱 실패:", current, e)
+                print("목표매수가 가격 파싱 실패:", current, e)
+                continue
+            # 수량은 비어 있을 수 있음 → 없으면 None (가격만 표시)
+            qty = None
+            if len(row) > 3 and str(row[3]).strip():
+                try:
+                    qty = abs(num(row[3]))
+                except Exception:
+                    qty = None
+            buys.setdefault(current, []).append({"qty": qty, "target": price})
             continue
         if len(row) < 9:
             continue
@@ -289,21 +233,8 @@ def fetch_target_prices(targets):
 
 
 # ──────────────────────────────────────────────
-# 교차 검증 (yfinance ↔ 네이버, 같은 날짜끼리 대조)
+# 교차 검증 (yfinance ↔ 네이버) — 원/달러 환율
 # ──────────────────────────────────────────────
-def naver_index_last(code, world=False):
-    """네이버 지수/환율의 (값, 'YYYY-MM-DD'). 실패 시 None."""
-    try:
-        if world:
-            j = naver_json(f"https://api.stock.naver.com/index/{code}/basic")
-        else:
-            j = naver_json(f"https://m.stock.naver.com/api/index/{code}/basic")
-        return num(j["closePrice"]), str(j["localTradedAt"])[:10]
-    except Exception as e:
-        print("네이버 지수 조회 실패:", code, e)
-        return None
-
-
 def naver_fx_last():
     try:
         j = naver_json("https://m.stock.naver.com/front-api/marketIndex/prices"
@@ -318,7 +249,6 @@ def naver_fx_last():
 def cross_check(label, yf_series, secondary, tol_pct, match_date=True):
     """
     yf_series: yfinance 종가 시리즈(날짜 인덱스), secondary: (값, 날짜) 또는 None.
-    match_date=True : 2차 소스의 날짜에 해당하는 yfinance 값과 비교 (지수 — 시점 차이 오탐 방지)
     match_date=False: 양쪽 최신값끼리 비교 (환율 — 24시간 거래라 소스별 날짜 표기가 달라 날짜 매칭이 오히려 오탐)
     반환: {"label", "status": ok|warn|na, "diff_pct", "p", "s"}
     """
@@ -341,41 +271,9 @@ def cross_check(label, yf_series, secondary, tol_pct, match_date=True):
 
 def run_validations(series_map):
     checks = []
-    checks.append(cross_check("KOSPI", series_map.get("^KS11"),
-                              naver_index_last("KOSPI"), 0.5))
-    checks.append(cross_check("나스닥", series_map.get("^IXIC"),
-                              naver_index_last(".IXIC", world=True), 0.5))
     checks.append(cross_check("원/달러", series_map.get("KRW=X"),
                               naver_fx_last(), 1.0, match_date=False))
     return checks
-
-
-# ──────────────────────────────────────────────
-# 차트 데이터 (최근 1개월, 기준일=100 정규화)
-# ──────────────────────────────────────────────
-def build_chart_payload():
-    datasets, all_dates = [], set()
-
-    def add(ticker, label, color):
-        try:
-            dates, closes = yf_series_month(ticker)
-        except Exception as e:
-            print(label, "차트 실패:", e)
-            return
-        if not closes:
-            return
-        base = closes[0]
-        all_dates.update(dates)
-        pts = [{"x": d, "y": round(v / base * 100, 2)} for d, v in zip(dates, closes)]
-        datasets.append({"label": label, "data": pts, "borderColor": color,
-                         "backgroundColor": color, "tension": 0.2,
-                         "pointRadius": 0, "borderWidth": 2, "spanGaps": True})
-
-    add("^KS11", "KOSPI", "#d23f3f")
-    add("^IXIC", "나스닥", "#2c5fd0")
-
-    # 한·미 거래일 캘린더가 달라 합집합 날짜를 공통 x축 라벨로 사용
-    return {"labels": sorted(all_dates), "datasets": datasets}
 
 
 # ──────────────────────────────────────────────
@@ -397,18 +295,14 @@ def sign(pct):
     return f'<span class="{cls}">{arrow} {abs(pct):.2f}%</span>'
 
 
-def stocks_html(rows, krw=True):
-    """상위 종목: 종목명 + 현재가 + 등락률 (한 줄씩)."""
-    out = []
-    for r in rows:
-        price = f"{r['price']:,.0f}" if krw else f"${r['price']:,.2f}"
-        out.append(f'<div class="stk"><span>{r["name"]}</span>'
-                   f'<span>{price} {sign(r["pct"])}</span></div>')
-    return "".join(out)
-
-
 def fmt_money(v, cur):
     return f"${v:,.2f}" if cur == "$" else f"{v:,.0f}원"
+
+
+def _qty_txt(qty):
+    if qty is None:
+        return ""
+    return f"{qty:,.4f}".rstrip("0").rstrip(".") if qty < 1 else f"{qty:,.0f}"
 
 
 def targets_card(targets, prices):
@@ -428,12 +322,10 @@ def targets_card(targets, prices):
         rows = []
 
         def lot_row(lot, side):
-            qty_txt = f"{lot['qty']:,.4f}".rstrip("0").rstrip(".") if lot["qty"] < 1 \
-                else f"{lot['qty']:,.0f}"
-            if side == "sell":
-                left = f"{qty_txt}{unit} → {fmt_money(lot['target'], cur)} 이상 매도"
-            else:
-                left = f"{qty_txt}{unit} → {fmt_money(lot['target'], cur)} 이하 매수"
+            qty_txt = _qty_txt(lot.get("qty"))
+            head = f"{qty_txt}{unit} → " if qty_txt else "→ "
+            word = "이상 매도" if side == "sell" else "이하 매수"
+            left = f"{head}{fmt_money(lot['target'], cur)} {word}"
             if last is not None:
                 if side == "sell":
                     rate, hit = last / lot["target"] * 100, last >= lot["target"]
@@ -441,8 +333,9 @@ def targets_card(targets, prices):
                     rate, hit = lot["target"] / last * 100, last <= lot["target"]
                 right = f"달성률 {rate:.1f}%" + (" ✅ 도달" if hit else "")
                 if hit:
-                    word = "매도" if side == "sell" else "매수"
-                    hits.append(f"{name} {word} {fmt_money(lot['target'], cur)} ({qty_txt}{unit})")
+                    w = "매도" if side == "sell" else "매수"
+                    qty_part = f" ({qty_txt}{unit})" if qty_txt else ""
+                    hits.append(f"{name} {w} {fmt_money(lot['target'], cur)}{qty_part}")
             else:
                 right, hit = "—", False
             cls = "tgt-row" + (" buy" if side == "buy" else "") + (" hit" if hit else "")
@@ -456,7 +349,7 @@ def targets_card(targets, prices):
         stocks_html_parts.append(
             f'<div class="tgt-stock"><div class="tgt-head"><span>{name}</span>'
             f'<span>{head_val}</span></div>{"".join(rows)}</div>')
-    card = (f'<div class="card chart-card"><h2>🎯 보유종목 목표 매도·매수가</h2>'
+    card = (f'<div class="card full"><h2>🎯 보유종목 목표 매도·매수가</h2>'
             f'{"".join(stocks_html_parts)}</div>')
     banner = (f'<div class="vbanner vhit">🎯 목표가 도달: {" · ".join(hits)}</div>'
               if hits else "")
@@ -486,9 +379,9 @@ def warn_args(checks, label):
 def build_html():
     parts_kr, parts_us = [], []
 
-    # 핵심 시리즈는 한 번만 받아 등락률·교차검증에 재사용
+    # 핵심 시리즈는 한 번만 받아 등락률·교차검증·날짜표시에 재사용
     series_map = {}
-    for tk in ["^KS11", "^IXIC", "KRW=X", "^VIX"]:
+    for tk in ["^KS11", "KRW=X", "^VIX"]:
         try:
             series_map[tk] = yf_close(tk)
         except Exception as e:
@@ -501,13 +394,7 @@ def build_html():
     if series_map.get("^KS11") is not None and len(series_map["^KS11"]):
         kr_date = series_map["^KS11"].index[-1].strftime("%Y-%m-%d")
 
-    # ── 국내 코스피시장 ──
-    try:
-        last, pct = prev_change(series_map["^KS11"])
-        w, tip = warn_args(checks, "KOSPI")
-        parts_kr.append(li("KOSPI", f"{last:,.2f} {sign(pct)}", w, tip))
-    except Exception as e:
-        parts_kr.append(li("KOSPI", f"조회 실패 ({e})"))
+    # ── 국내 보조지표 ──
     try:
         b = kr_rate("IRR_GOVT03Y")
         if b is not None:
@@ -527,27 +414,13 @@ def build_html():
     except Exception as e:
         print("환율 실패:", e)
     try:
-        parts_kr.append(li("거래량 상위 3", stocks_html(kr_top_volume())))
-    except Exception as e:
-        parts_kr.append(li("거래량 상위 3", f"조회 실패 ({e})"))
-    try:
-        parts_kr.append(li("시총 상위 3", stocks_html(kr_top_cap())))
-    except Exception as e:
-        parts_kr.append(li("시총 상위 3", f"조회 실패 ({e})"))
-    try:
         k = naver_stock("498400")            # KODEX 200타겟위클리커버드콜
         parts_kr.append(li("KODEX 200타겟위클리커버드콜",
                            f"{k['price']:,.0f} {sign(k['pct'])}"))
     except Exception as e:
         print("KODEX 커버드콜 실패:", e)
 
-    # ── 미국 나스닥시장 ──
-    try:
-        last, pct = prev_change(series_map["^IXIC"])
-        w, tip = warn_args(checks, "나스닥")
-        parts_us.append(li("나스닥 종합", f"{last:,.2f} {sign(pct)}", w, tip))
-    except Exception as e:
-        parts_us.append(li("나스닥 종합", f"조회 실패 ({e})"))
+    # ── 미국 보조지표 ──
     try:
         vix_last, vix_pct = prev_change(series_map["^VIX"])
         parts_us.append(li("공포지수(VIX)", f"{vix_last:.2f} {sign(vix_pct)}"))
@@ -569,18 +442,12 @@ def build_html():
     except Exception as e:
         print("달러인덱스 실패:", e)
     try:
-        tv, tc = us_top()
-        parts_us.append(li("거래량 상위 3", stocks_html(tv, krw=False)))
-        parts_us.append(li("시총 상위 3", stocks_html(tc, krw=False)))
-    except Exception as e:
-        parts_us.append(li("상위 종목", f"조회 실패 ({e})"))
-    try:
         tqqq_last, tqqq_pct = prev_change(yf_close("TQQQ"))
         parts_us.append(li("TQQQ (나스닥100 3배)", f"${tqqq_last:,.2f} {sign(tqqq_pct)}"))
     except Exception as e:
         print("TQQQ 실패:", e)
 
-    # ── 보유종목 목표 매도가 (시트 읽기 실패 시 섹션 생략) ──
+    # ── 보유종목 목표 매도·매수가 (가장 중요 · 시트 읽기 실패 시 섹션 생략) ──
     try:
         targets = fetch_targets()
         tgt_card, tgt_banner = targets_card(targets, fetch_target_prices(targets))
@@ -588,7 +455,6 @@ def build_html():
         print("목표가 시트 조회 실패:", e)
         tgt_card, tgt_banner = "", ""
 
-    chart_json = json.dumps(build_chart_payload(), ensure_ascii=False)
     banner = validation_banner(checks)
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -596,54 +462,43 @@ def build_html():
 <html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>일일 시장 리포트</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
- body{{font-family:'Pretendard',system-ui,sans-serif;background:#f5f6f8;color:#1a1a2e;margin:0;padding:32px}}
+ *{{box-sizing:border-box}}
+ body{{font-family:'Pretendard',system-ui,sans-serif;background:#f5f6f8;color:#1a1a2e;margin:0;padding:24px}}
  h1{{font-size:22px;margin:0 0 4px}} .stamp{{color:#888;font-size:13px;margin-bottom:10px}}
- .vbanner{{display:inline-block;font-size:13px;padding:6px 12px;border-radius:8px;margin-bottom:20px}}
+ .vbanner{{display:inline-block;font-size:13px;padding:6px 12px;border-radius:8px;margin-bottom:16px}}
  .vok{{background:#e8f5ec;color:#1d7a3d}} .vwarn{{background:#fdf0e0;color:#a05c00}}
  .vhit{{background:#fff3cd;color:#8a6100;font-weight:700;margin-left:6px}}
- .tgt-stock{{margin-bottom:18px}} .tgt-stock:last-child{{margin-bottom:0}}
- .tgt-head{{display:flex;justify-content:space-between;font-weight:700;font-size:15px;padding:8px 0;border-bottom:1px solid #e8e8ee}}
- .tgt-row{{display:flex;justify-content:space-between;font-size:14px;padding:7px 0 7px 12px;border-bottom:1px solid #f5f5f8;color:#444}}
- .tgt-row.hit{{background:#fff8e1;font-weight:700;color:#8a6100;border-radius:6px}}
- .tgt-row.buy{{color:#d23f3f}} .tgt-row.buy .up,.tgt-row.buy .down{{color:inherit}}
- .grid{{display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:840px}}
- .card{{background:#fff;border-radius:16px;padding:24px;box-shadow:0 2px 10px rgba(0,0,0,.05)}}
- .card h2{{font-size:17px;margin:0 0 16px;padding-bottom:10px;border-bottom:2px solid #2c5fd0}}
+ .grid{{display:grid;grid-template-columns:1fr 1fr;gap:18px;max-width:840px}}
+ .card{{background:#fff;border-radius:16px;padding:22px;box-shadow:0 2px 10px rgba(0,0,0,.05)}}
+ .card h2{{font-size:17px;margin:0 0 14px;padding-bottom:10px;border-bottom:2px solid #2c5fd0}}
+ .full{{grid-column:1/-1}}
  ul{{list-style:none;margin:0;padding:0}} li{{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid #f0f0f3;font-size:14px}}
- .lbl{{color:#555;white-space:nowrap}} .val{{font-weight:600;text-align:right}}
+ .lbl{{color:#555}} .val{{font-weight:600;text-align:right}}
  .up{{color:#d23f3f}} .down{{color:#2c5fd0}} .warn{{cursor:help}}
  .noteline{{padding:4px 0 9px}} .note{{color:#999;font-size:12px;font-weight:400;line-height:1.5;text-align:left}}
- .stk{{display:flex;justify-content:space-between;gap:14px}} .stk span:first-child{{font-weight:500;color:#333}}
- .chart-card{{grid-column:1/-1}} .chart-card canvas{{max-height:340px}}
- @media(max-width:680px){{.grid{{grid-template-columns:1fr}}}}
+ .tgt-stock{{margin-bottom:16px}} .tgt-stock:last-child{{margin-bottom:0}}
+ .tgt-head{{display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px;font-weight:700;font-size:15px;padding:8px 0;border-bottom:1px solid #e8e8ee}}
+ .tgt-row{{display:flex;justify-content:space-between;flex-wrap:wrap;gap:2px 10px;font-size:14px;padding:7px 0 7px 10px;border-bottom:1px solid #f5f5f8;color:#444}}
+ .tgt-row.hit{{background:#fff8e1;font-weight:700;color:#8a6100;border-radius:6px}}
+ .tgt-row.buy{{color:#d23f3f}} .tgt-row.buy .up,.tgt-row.buy .down{{color:inherit}}
+ .tgt-row span:last-child{{white-space:nowrap}}
+ @media(max-width:680px){{
+   body{{padding:14px}}
+   .grid{{grid-template-columns:1fr;gap:14px}}
+   .card{{padding:16px;border-radius:14px}}
+   h1{{font-size:20px}}
+   li,.tgt-row{{font-size:13px}} .tgt-head{{font-size:14px}}
+ }}
 </style></head><body>
 <h1>📊 일일 시장 리포트</h1>
 <div class="stamp">생성 {stamp} · {kr_date} 영업일 기준 · 등락률은 전일 대비</div>
 {banner}{tgt_banner}
 <div class="grid">
-  <div class="card"><h2>🇰🇷 국내 코스피시장</h2><ul>{''.join(parts_kr)}</ul></div>
-  <div class="card"><h2>🇺🇸 미국 나스닥시장</h2><ul>{''.join(parts_us)}</ul></div>
-  <div class="card chart-card"><h2>📈 최근 1개월 추이 (시작일=100)</h2><canvas id="trend"></canvas></div>
   {tgt_card}
+  <div class="card"><h2>🇰🇷 국내 지표</h2><ul>{''.join(parts_kr)}</ul></div>
+  <div class="card"><h2>🇺🇸 미국 지표</h2><ul>{''.join(parts_us)}</ul></div>
 </div>
-<script>
-const CHART_DATA = {chart_json};
-new Chart(document.getElementById('trend'), {{
-  type: 'line',
-  data: CHART_DATA,
-  options: {{
-    responsive: true,
-    interaction: {{mode: 'index', intersect: false}},
-    scales: {{
-      x: {{type: 'category', ticks: {{maxTicksLimit: 10}}}},
-      y: {{title: {{display: true, text: '상대지수 (시작일=100)'}}}}
-    }},
-    plugins: {{legend: {{position: 'top'}}}}
-  }}
-}});
-</script>
 </body></html>"""
 
 
