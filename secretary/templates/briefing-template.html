@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<!--
+  비서(Bees) 일일 브리핑 템플릿
+  사용법: {{...}} 자리표시자를 채워 secretary/briefings/YYYY-MM-DD.html 로 저장한다.
+  규칙: 흰 바탕·검정 글자만. 색상/면 채움/장식 없음(토너 절약). 섹션 순서 고정.
+  체크박스는 진행 표시일 뿐 실제 완료 처리가 아니다(원장 갱신은 사용자 확인 시에만).
+-->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>일일 브리핑 {{DATE}}</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { background: #fff; color: #000; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    font-size: 12.5px; line-height: 1.5;
+    max-width: 720px; margin: 0 auto; padding: 16px 20px;
+  }
+  h1 { font-size: 18px; margin: 0 0 2px; }
+  .meta { font-size: 11px; margin: 0 0 10px; }
+  h2 {
+    font-size: 13.5px; margin: 16px 0 6px; padding-bottom: 3px;
+    border-bottom: 1px solid #000; text-transform: none;
+  }
+  ul { margin: 4px 0; padding-left: 0; list-style: none; }
+  li { margin: 3px 0; padding-left: 2px; }
+  .task { display: flex; align-items: flex-start; gap: 6px; }
+  .task input[type="checkbox"] { margin-top: 2px; }
+  .sub { margin: 2px 0 4px 22px; font-size: 11.5px; }
+  .sub .task { margin: 1px 0; }
+  .note { font-size: 11px; margin: 1px 0 0 22px; }
+  .blocked { font-weight: 600; }
+  .priority-num { font-weight: 700; margin-right: 4px; }
+  table { border-collapse: collapse; width: 100%; font-size: 11.5px; margin: 4px 0; }
+  th, td { border: 1px solid #000; padding: 3px 6px; text-align: left; }
+  .warn { font-weight: 600; }
+  .print-bar { margin-bottom: 12px; }
+  .print-bar button {
+    font-size: 12px; padding: 6px 14px; border: 1px solid #000;
+    background: #fff; color: #000; cursor: pointer;
+  }
+  hr { border: none; border-top: 1px solid #000; margin: 14px 0; }
+  @media print {
+    .print-bar { display: none; }
+    body { max-width: none; padding: 0; }
+    @page { margin: 12mm; }
+  }
+</style>
+</head>
+<body>
+  <div class="print-bar">
+    <button onclick="window.print()">인쇄하기</button>
+  </div>
+
+  <h1>일일 브리핑</h1>
+  <p class="meta">{{DATE_KO}} · 기준 {{TIME}} KST · 작성: 비서(Bees)</p>
+
+  <!-- ============ 1. 오늘 할 일 ============ -->
+  <h2>1. 오늘 할 일</h2>
+  <!-- 반드시 해야 하는 일 1~3개만 우선 배치. 막힌 업무는 이유+다음 행동 표시. -->
+  <ul>
+    <li class="task">
+      <input type="checkbox">
+      <span><span class="priority-num">1순위</span>{{TASK_1_TITLE}} <span class="note-inline">({{TASK_1_META}})</span></span>
+    </li>
+    <li class="task">
+      <input type="checkbox">
+      <span><span class="priority-num">2순위</span>{{TASK_2_TITLE}} ({{TASK_2_META}})</span>
+    </li>
+    <li class="task">
+      <input type="checkbox">
+      <span><span class="priority-num">3순위</span>{{TASK_3_TITLE}} ({{TASK_3_META}})</span>
+    </li>
+  </ul>
+
+  <!-- 막힌 업무 예시 블록 -->
+  <p class="blocked">막힌 업무</p>
+  <ul>
+    <li class="task">
+      <input type="checkbox">
+      <span>{{BLOCKED_TITLE}}
+        <div class="note">· 막힌 이유: {{BLOCKED_REASON}}</div>
+        <div class="note">· 다음 행동: {{BLOCKED_NEXT}}</div>
+      </span>
+    </li>
+  </ul>
+
+  <!-- ============ 2. 오늘 일정 ============ -->
+  <h2>2. 오늘 일정</h2>
+  <!-- Google Calendar 읽기 전용. 만료 시 아래 안내로 대체. 장소 있으면 주소/자동차 소요/지도 링크. -->
+  <p>{{TODAY_CALENDAR}}</p>
+  <!-- 예: 캘린더 인증(OAuth) 만료로 오늘 일정을 불러오지 못했습니다. 실제 일정·충돌 여부는 확인 불가. 재인증 후 표시됩니다. -->
+
+  <!-- ============ 3. 내일 일정 ============ -->
+  <h2>3. 내일 일정</h2>
+  <p>{{TOMORROW_CALENDAR}}</p>
+
+  <!-- ============ 4. 블로그 현황 ============ -->
+  <h2>4. 블로그 현황</h2>
+  <ul>
+    <li>이번 주 실제 발행 / 필수: <strong>{{BLOG_PUBLISHED}} / 2편</strong> (권장 3편)</li>
+    <li>예정·예약 상태 글 수: {{BLOG_SCHEDULED}}편</li>
+    <li>다음 발행 예정: {{BLOG_NEXT}}</li>
+  </ul>
+  <p style="margin:6px 0 2px;">최근 14일 발행 기록</p>
+  <table>
+    <tr><th>발행일</th><th>제목</th></tr>
+    {{BLOG_RECENT_ROWS}}
+  </table>
+  <p style="margin:8px 0 2px;">미발행 원고·초안</p>
+  <ul>
+    {{BLOG_DRAFT_ITEMS}}
+  </ul>
+
+  <hr>
+  <p class="meta">체크박스는 진행 표시용이며 실제 완료 처리가 아닙니다. 완료는 다음 "비서" 호출 때 확인 후 원장에 반영됩니다.</p>
+</body>
+</html>
