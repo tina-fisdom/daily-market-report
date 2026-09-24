@@ -18,6 +18,7 @@
 import csv
 import datetime
 import io
+import os
 import re
 
 import requests
@@ -79,25 +80,48 @@ BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 
 def fred_last(series_id):
-    """FRED 공개 CSV(키 불필요)의 최신 관측값: (값, 'YYYY-MM-DD').
-    결측치('.')는 건너뛴다. 클라우드 IP에서 응답이 느릴 때가 있어 2회까지 재시도."""
+    """FRED 최신 관측값: (값, 'YYYY-MM-DD'). 결측치('.')는 건너뛴다.
+    환경변수 FRED_API_KEY가 있으면 공식 API(api.stlouisfed.org)를,
+    없으면 키 불필요 CSV(fred.stlouisfed.org — GitHub Actions에서 막히는 경우가 많음)를 쓴다."""
     start = (datetime.date.today() - datetime.timedelta(days=400)).isoformat()
-    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}&cosd={start}"
-    err = None
-    for _ in range(2):
-        try:
-            r = HTTP.get(url, timeout=40, headers={"User-Agent": BROWSER_UA,
-                                                   "Accept": "text/csv,*/*"})
-            r.raise_for_status()
-            for line in reversed(r.text.strip().splitlines()[1:]):
-                d, _, v = line.partition(",")
-                v = v.strip()
-                if v and v != ".":
-                    return float(v), d.strip()
-            raise ValueError(f"FRED {series_id} 값 없음")
-        except Exception as e:
-            err = e
-    raise err
+    key = os.environ.get("FRED_API_KEY", "").strip()
+    if key:
+        j = http_json("https://api.stlouisfed.org/fred/series/observations"
+                      f"?series_id={series_id}&api_key={key}&file_type=json"
+                      f"&observation_start={start}&sort_order=desc&limit=10")
+        for o in j["observations"]:
+            if o["value"] not in ("", "."):
+                return float(o["value"]), o["date"]
+        raise ValueError(f"FRED {series_id} 값 없음")
+    r = HTTP.get(f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}&cosd={start}",
+                 timeout=25, headers={"User-Agent": BROWSER_UA, "Accept": "text/csv,*/*"})
+    r.raise_for_status()
+    for line in reversed(r.text.strip().splitlines()[1:]):
+        d, _, v = line.partition(",")
+        v = v.strip()
+        if v and v != ".":
+            return float(v), d.strip()
+    raise ValueError(f"FRED {series_id} 값 없음")
+
+
+def sahm_rule():
+    """삼의 법칙 값을 미 노동통계국(BLS) 실업률(LNS14000000, 계절조정)로 직접 계산:
+    최근 3개월 평균 실업률 − 직전 12개월 동안의 3개월 평균 중 최저치. 반환 (값, 'YYYY-MM')."""
+    y = datetime.date.today().year
+    r = HTTP.post("https://api.bls.gov/publicAPI/v2/timeseries/data/",
+                  json={"seriesid": ["LNS14000000"], "startyear": str(y - 2), "endyear": str(y)},
+                  timeout=20)
+    r.raise_for_status()
+    data = r.json()["Results"]["series"][0]["data"]
+    pts = sorted((int(d["year"]), int(d["period"][1:]), float(d["value"]))
+                 for d in data if d["period"].startswith("M") and d["period"] != "M13"
+                 and d["value"] not in ("-", ""))
+    rates = [v for _, _, v in pts]
+    ma3 = [sum(rates[i - 2:i + 1]) / 3 for i in range(2, len(rates))]
+    if len(ma3) < 13:
+        raise ValueError("BLS 실업률 데이터 부족")
+    yy, mm, _ = pts[-1]
+    return ma3[-1] - min(ma3[-13:-1]), f"{yy}-{mm:02d}"
 
 
 def treasury_curve():
@@ -279,9 +303,9 @@ def us_risk_signals():
 
     # ── 경기·밸류에이션 ──
     def sahm():
-        v, d = fred_last("SAHMREALTIME")
+        v, d = sahm_rule()
         lv = "ok" if v < 0.3 else ("warn" if v < 0.5 else "danger")
-        return f"{v:.2f}%p <small>({d[:7]})</small>", lv
+        return f"{v:.2f}%p <small>({d})</small>", lv
     add("경기·밸류에이션", "삼의 법칙 (실업률)",
         "최근 3개월 평균 실업률이 지난 1년 최저치보다 0.5%p 이상 오르면 경기침체가 시작됐다고 보는 규칙. 월 1회 갱신.",
         "0.3%p 미만 안정 · 0.3~0.5%p 주의 · 0.5%p 이상 위험", sahm)

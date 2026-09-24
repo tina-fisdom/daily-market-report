@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Seoul          # '생성' 시각을 한국 시간으로 표시
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}   # 선택: 하이일드 스프레드용 (없으면 키 없는 CSV 시도)
     permissions:
       contents: write
     steps:
