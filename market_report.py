@@ -15,7 +15,9 @@
    한 곳이 실패해도 나머지 리포트는 정상 생성됩니다.
 """
 
+import csv
 import datetime
+import io
 import re
 
 import requests
@@ -72,19 +74,55 @@ def kr_rate(marketindex_cd):
 # ──────────────────────────────────────────────
 # 미국 하락 위험 지표 — 외부 소스
 # ──────────────────────────────────────────────
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/140.0 Safari/537.36")
+
+
 def fred_last(series_id):
     """FRED 공개 CSV(키 불필요)의 최신 관측값: (값, 'YYYY-MM-DD').
-    결측치('.')는 건너뛴다."""
+    결측치('.')는 건너뛴다. 클라우드 IP에서 응답이 느릴 때가 있어 2회까지 재시도."""
     start = (datetime.date.today() - datetime.timedelta(days=400)).isoformat()
-    r = HTTP.get("https://fred.stlouisfed.org/graph/fredgraph.csv"
-                 f"?id={series_id}&cosd={start}", timeout=20)
-    r.raise_for_status()
-    for line in reversed(r.text.strip().splitlines()[1:]):
-        d, _, v = line.partition(",")
-        v = v.strip()
-        if v and v != ".":
-            return float(v), d.strip()
-    raise ValueError(f"FRED {series_id} 값 없음")
+    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}&cosd={start}"
+    err = None
+    for _ in range(2):
+        try:
+            r = HTTP.get(url, timeout=40, headers={"User-Agent": BROWSER_UA,
+                                                   "Accept": "text/csv,*/*"})
+            r.raise_for_status()
+            for line in reversed(r.text.strip().splitlines()[1:]):
+                d, _, v = line.partition(",")
+                v = v.strip()
+                if v and v != ".":
+                    return float(v), d.strip()
+            raise ValueError(f"FRED {series_id} 값 없음")
+        except Exception as e:
+            err = e
+    raise err
+
+
+def treasury_curve():
+    """미 재무부 공식 일일 국채 수익률 곡선 최신 행: ({'3 Mo': 4.03, '2 Yr': ..., '10 Yr': ...}, 날짜).
+    CSV는 최신 날짜가 맨 위. 연초엔 올해 데이터가 없을 수 있어 전년도까지 확인."""
+    year = datetime.date.today().year
+    for y in (year, year - 1):
+        r = HTTP.get("https://home.treasury.gov/resource-center/data-chart-center/"
+                     f"interest-rates/daily-treasury-rates.csv/{y}/all"
+                     f"?type=daily_treasury_yield_curve&field_tdr_date_value={y}&page&_format=csv",
+                     timeout=20, headers={"User-Agent": BROWSER_UA})
+        r.raise_for_status()
+        rows = list(csv.reader(io.StringIO(r.text.lstrip("\ufeff"))))
+        if len(rows) < 2:
+            continue
+        head, first = rows[0], rows[1]
+        vals = {}
+        for k, v in zip(head, first):
+            try:
+                vals[k.strip()] = float(v)
+            except ValueError:
+                pass
+        m, d, yy = first[0].split("/")
+        return vals, f"{yy}-{m}-{d}"
+    raise ValueError("재무부 수익률 데이터 없음")
 
 
 def cnn_fear_greed():
@@ -99,10 +137,11 @@ def cnn_fear_greed():
 
 def shiller_cape():
     """실러 CAPE (multpl.com 현재값)."""
-    r = HTTP.get("https://www.multpl.com/shiller-pe", timeout=15)
+    r = HTTP.get("https://www.multpl.com/shiller-pe", timeout=15,
+                 headers={"User-Agent": BROWSER_UA})
     r.raise_for_status()
     text = re.sub(r"<[^>]+>", " ", r.text)
-    m = re.search(r"Current Shiller PE Ratio:\s*([\d.]+)", text)
+    m = re.search(r"Current\s+Shiller\s+PE\s+Ratio\s*:\s*([\d.]+)", text)
     if not m:
         raise ValueError("CAPE 값 파싱 실패")
     return float(m.group(1))
@@ -204,18 +243,28 @@ def us_risk_signals():
         "-5% 이내 안정 · -5~-10% 주의 · -10% 이상 위험", lambda: drawdown(ndx))
 
     # ── 신용·금리 ──
-    def t10y2y():
-        v, d = fred_last("T10Y2Y")
+    curve = {}
+
+    def spread(long_k, short_k):
+        if not curve:
+            curve["v"], curve["d"] = treasury_curve()
+        v = curve["v"][long_k] - curve["v"][short_k]
         lv = "danger" if v < 0 else ("warn" if v < 0.5 else "ok")
-        return f"{v:+.2f}%p <small>({d})</small>", lv
-    add("신용·금리", "장단기 금리차 (10년 − 2년)",
-        "정상이라면 오래 빌려줄수록 이자가 높습니다. 이게 뒤집히면(역전) 시장이 경기 침체를 예상한다는 뜻 — 역전 해소 직후가 오히려 위험했던 적이 많습니다.",
-        "0.5%p 이상 안정 · 0~0.5%p 주의 · 마이너스(역전) 위험", t10y2y)
+        return f"{v:+.2f}%p <small>({curve['d']})</small>", lv
 
     def t10y3m():
-        v = yf_last("^TNX") - yf_last("^IRX")
-        lv = "danger" if v < 0 else ("warn" if v < 0.5 else "ok")
-        return f"{v:+.2f}%p", lv
+        try:
+            return spread("10 Yr", "3 Mo")
+        except Exception as e:                     # 재무부 실패 시 yfinance로 대체
+            print("재무부 10년-3개월 실패, yfinance 사용:", e)
+            v = yf_last("^TNX") - yf_last("^IRX")
+            lv = "danger" if v < 0 else ("warn" if v < 0.5 else "ok")
+            return f"{v:+.2f}%p", lv
+
+    add("신용·금리", "장단기 금리차 (10년 − 2년)",
+        "정상이라면 오래 빌려줄수록 이자가 높습니다. 이게 뒤집히면(역전) 시장이 경기 침체를 예상한다는 뜻 — 역전 해소 직후가 오히려 위험했던 적이 많습니다.",
+        "0.5%p 이상 안정 · 0~0.5%p 주의 · 마이너스(역전) 위험",
+        lambda: spread("10 Yr", "2 Yr"))
     add("신용·금리", "장단기 금리차 (10년 − 3개월)",
         "미 연준이 경기침체 예측에 가장 신뢰하는 금리차. 10년−2년과 함께 보면 신호가 더 선명해집니다.",
         "0.5%p 이상 안정 · 0~0.5%p 주의 · 마이너스(역전) 위험", t10y3m)

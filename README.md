@@ -25,7 +25,8 @@ GitHub Actions가 평일 매일 아침 데이터를 수집 → `index.html` 생�
 
 ## 데이터 소스
 - yfinance: `^VIX`, `^VIX3M`, `^GSPC`, `^IXIC`, `^TNX`, `^IRX`, `KRW=X`, `DX-Y.NYB`, `^KS11`
-- FRED 공개 CSV(키 불필요): `T10Y2Y`(10년−2년), `BAMLH0A0HYM2`(하이일드 스프레드), `SAHMREALTIME`(삼의 법칙)
+- 미 재무부 일일 국채 수익률 CSV: 장단기 금리차(10년−2년, 10년−3개월)
+- FRED 공개 CSV(키 불필요): `BAMLH0A0HYM2`(하이일드 스프레드), `SAHMREALTIME`(삼의 법칙)
 - CNN 공포·탐욕 지수 공개 JSON, multpl.com(실러 CAPE)
 - 네이버 금융: 국고채·CD 금리, 환율 교차검증
 - 신호 기준값은 `market_report.py`의 `us_risk_signals()`에서 바로 수정 가능
