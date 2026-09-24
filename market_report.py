@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-일일 시장 리포트 생성기 (간소화 버전)
-- 핵심: 🎯 보유종목 목표 매도·매수가 추적 (Google Sheet 읽기 전용)
-- 보조 지표: 국고채 3년·CD 91일, 원/달러 환율, KODEX 커버드콜 /
-            VIX, 미 국채 3개월·10년, 달러인덱스, TQQQ
+일일 시장 리포트 생성기
+- 핵심: 🚨 미국 시장 하락 위험 신호등 — 시장 참여자들이 가장 많이 보는 지표를
+        심리 / 추세 / 신용·금리 / 경기·밸류에이션 4개 묶음으로 보여주고
+        지표마다 안정·주의·위험 신호를 붙인다.
+- 보조 지표: 국고채 3년·CD 91일, 원/달러 환율 / 미 국채 3개월·10년, 달러인덱스
 - 등락률: 전일(직전 영업일) 대비
 - 교차 검증: 원/달러 환율을 yfinance ↔ 네이버 두 소스에서 대조
   → 오차 초과 시 ⚠️ 표시 후 그대로 게시 (게시 중단 없음)
@@ -14,21 +15,19 @@
    한 곳이 실패해도 나머지 리포트는 정상 생성됩니다.
 """
 
-import csv
 import datetime
-import io
 import re
 
 import requests
 import yfinance as yf
 
-NAVER = requests.Session()
-NAVER.trust_env = False          # 로컬 .netrc 간섭 회피
-NAVER.headers.update({"User-Agent": "Mozilla/5.0"})
+HTTP = requests.Session()
+HTTP.trust_env = False          # 로컬 .netrc 간섭 회피
+HTTP.headers.update({"User-Agent": "Mozilla/5.0"})
 
 
-def naver_json(url):
-    r = NAVER.get(url, timeout=15)
+def http_json(url, **kw):
+    r = HTTP.get(url, timeout=15, **kw)
     r.raise_for_status()
     return r.json()
 
@@ -59,18 +58,11 @@ def yf_last(ticker):
 # ──────────────────────────────────────────────
 # 국내 보조지표 — 네이버 금융 공개 API
 # ──────────────────────────────────────────────
-def naver_stock(code):
-    """네이버 종목 기본정보: {name, price, pct}. 예: 498400(KODEX 200타겟위클리커버드콜)."""
-    j = naver_json(f"https://m.stock.naver.com/api/stock/{code}/basic")
-    return {"name": j["stockName"], "price": num(j["closePrice"]),
-            "pct": num(j["fluctuationsRatio"])}
-
-
 def kr_rate(marketindex_cd):
     """네이버 시장지표 금리(%) 최신값. 예: IRR_GOVT03Y(국고채 3년), IRR_CD91(CD 91일).
     ※ 국고채 1년/10년물은 네이버 미제공 — 단기금리는 CD 91일물로 대체."""
-    r = NAVER.get("https://finance.naver.com/marketindex/interestDailyQuote.naver"
-                  f"?marketindexCd={marketindex_cd}&page=1", timeout=15)
+    r = HTTP.get("https://finance.naver.com/marketindex/interestDailyQuote.naver"
+                 f"?marketindexCd={marketindex_cd}&page=1", timeout=15)
     r.raise_for_status()
     r.encoding = "euc-kr"
     nums = re.findall(r'<td class="num">([\d.]+)</td>', r.text)
@@ -78,158 +70,183 @@ def kr_rate(marketindex_cd):
 
 
 # ──────────────────────────────────────────────
-# 보유종목 목표 매도가 (사용자 Google Sheet — 읽기 전용)
-# 규칙: A열 텍스트 = 종목 블록 시작 / 2026년 이후 거래만 /
-#       매도예정가(I열) 빈칸 무시 / 같은 인격이 이후 매도했으면 그 lot 제외
+# 미국 하락 위험 지표 — 외부 소스
 # ──────────────────────────────────────────────
-TARGET_SHEET_ID = "1qj-FAIVW9Umdlg61675nJJ9PNilZ61qvYwb5TBDQtNk"
-TARGET_SHEET_GID = "0"
-TARGET_SINCE = datetime.date(2026, 1, 1)
-
-# 종목명 → (시세조회 키, 통화). 'us'/'btc'=yfinance, 'kr'=네이버 종목코드
-TICKER_MAP = {
-    "TQQQ": ("TQQQ", "us"),
-    "비트코인": ("BTC-KRW", "btc"),
-    "KODEX코스닥150": ("229200", "kr"),
-    "코스닥150": ("229200", "kr"),
-    "KODEX코스닥150레버리지": ("233740", "kr"),
-    "코스닥150레버리지": ("233740", "kr"),
-    "맥쿼리인프라": ("088980", "kr"),
-    "동서": ("026960", "kr"),
-    "KODEX200타겟위클리커버드콜": ("498400", "kr"),
-}
-
-
-def _parse_date(s):
-    s = str(s).strip().replace(".", "-").replace("/", "-")
-    m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", s)
-    if not m:
-        return None
-    try:
-        return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-    except ValueError:
-        return None
-
-
-def resolve_ticker(name):
-    """종목명 → (키, 통화구분). 미등록이면 네이버 자동완성으로 탐색, 실패 시 None."""
-    key = re.sub(r"\s+", "", name).upper()
-    m = re.search(r"\((\d{6})\)", name)
-    if m:
-        return m.group(1), "kr"
-    for k, v in TICKER_MAP.items():
-        if k.upper() == key:
-            return v
-    try:
-        import urllib.parse
-        q = urllib.parse.quote(name)
-        j = naver_json(f"https://ac.stock.naver.com/ac?q={q}&target=stock")
-        items = j.get("items") or []
-        if items and items[0].get("nationCode") == "KOR":
-            return items[0]["code"], "kr"
-    except Exception as e:
-        print("종목 탐색 실패:", name, e)
-    return None
-
-
-def fetch_targets():
-    """시트에서 목표 lot 추출: {종목명: {"sell": [{qty, target}], "buy": [{qty, target}]}}.
-    sell = 2026+ 매수 행 중 매도예정가(I열) 있는 미체결 lot
-    buy  = B열이 '목표매수가'인 행 (C열=가격, D열=수량, 수량은 없을 수 있음)"""
-    url = (f"https://docs.google.com/spreadsheets/d/{TARGET_SHEET_ID}"
-           f"/export?format=csv&gid={TARGET_SHEET_GID}")
-    r = NAVER.get(url, timeout=20)
+def fred_last(series_id):
+    """FRED 공개 CSV(키 불필요)의 최신 관측값: (값, 'YYYY-MM-DD').
+    결측치('.')는 건너뛴다."""
+    start = (datetime.date.today() - datetime.timedelta(days=400)).isoformat()
+    r = HTTP.get("https://fred.stlouisfed.org/graph/fredgraph.csv"
+                 f"?id={series_id}&cosd={start}", timeout=20)
     r.raise_for_status()
-    rows = list(csv.reader(io.StringIO(r.content.decode("utf-8"))))
+    for line in reversed(r.text.strip().splitlines()[1:]):
+        d, _, v = line.partition(",")
+        v = v.strip()
+        if v and v != ".":
+            return float(v), d.strip()
+    raise ValueError(f"FRED {series_id} 값 없음")
 
-    blocks = {}          # 종목명 → [(행번호, 인격, 수량, 목표가)]
-    sells = {}           # 종목명 → [(행번호, 인격)]
-    buys = {}            # 종목명 → [{qty, target}]
-    current = None
-    HEADER_LABELS = {"월", "연월", "년도", "일자"}
-    for i, row in enumerate(rows):
-        a = (row[0].strip() if row else "")
-        b = (row[1].strip() if len(row) > 1 else "")
-        if a and not a[0].isdigit():
-            # 거래 표의 컬럼 헤더 행("월,일자,…")은 마커가 아님 — 블록 유지
-            if a in HEADER_LABELS or b in ("일자", "날짜"):
-                continue
-            current = a                          # 종목 블록 마커
-            continue
-        if current is None:
-            continue
-        if "목표매수가" in b:                     # 목표 매수가 행: C=가격, D=수량(선택)
-            try:
-                price = num(str(row[2]).replace("₩", "").replace("$", ""))
-            except Exception as e:
-                print("목표매수가 가격 파싱 실패:", current, e)
-                continue
-            # 수량은 비어 있을 수 있음 → 없으면 None (가격만 표시)
-            qty = None
-            if len(row) > 3 and str(row[3]).strip():
-                try:
-                    qty = abs(num(row[3]))
-                except Exception:
-                    qty = None
-            buys.setdefault(current, []).append({"qty": qty, "target": price})
-            continue
-        if len(row) < 9:
-            continue
-        d = _parse_date(row[1] if len(row) > 1 else "")
-        if d is None or d < TARGET_SINCE:
-            continue
-        trade = (row[5] if len(row) > 5 else "").strip()
-        persona = (row[4] if len(row) > 4 else "").strip()
-        if "매도" in trade and persona:
-            sells.setdefault(current, []).append((i, persona))
-        if "매수" not in trade:
-            continue
-        sell_target = (row[8] if len(row) > 8 else "").strip()
-        if not sell_target:
-            continue
+
+def cnn_fear_greed():
+    """CNN 공포·탐욕 지수 (0~100): (점수, 등급 문자열)."""
+    j = http_json("https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
+                  headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                           "Referer": "https://edition.cnn.com/",
+                           "Origin": "https://edition.cnn.com"})
+    fg = j["fear_and_greed"]
+    return float(fg["score"]), str(fg.get("rating", ""))
+
+
+def shiller_cape():
+    """실러 CAPE (multpl.com 현재값)."""
+    r = HTTP.get("https://www.multpl.com/shiller-pe", timeout=15)
+    r.raise_for_status()
+    text = re.sub(r"<[^>]+>", " ", r.text)
+    m = re.search(r"Current Shiller PE Ratio:\s*([\d.]+)", text)
+    if not m:
+        raise ValueError("CAPE 값 파싱 실패")
+    return float(m.group(1))
+
+
+# ──────────────────────────────────────────────
+# 신호 판정 — level: ok(안정) / warn(주의) / danger(위험) / na(조회 실패)
+# ──────────────────────────────────────────────
+LEVEL_TEXT = {"ok": "안정", "warn": "주의", "danger": "위험", "na": "조회 실패"}
+
+# 묶음 순서 = 화면 순서
+GROUPS = [
+    ("심리", "시장 참여자들이 얼마나 겁먹었나"),
+    ("추세", "주가가 이미 꺾이고 있나"),
+    ("신용·금리", "돈줄이 조이고 있나"),
+    ("경기·밸류에이션", "경기와 가격 수준은 버틸 만한가"),
+]
+
+
+def signal(group, name, value, level, note, criteria):
+    return {"group": group, "name": name, "value": value, "level": level,
+            "note": note, "criteria": criteria}
+
+
+def us_risk_signals():
+    """미국 시장 하락 위험 지표 목록. 지표별로 실패해도 '조회 실패'로 남긴다."""
+    out = []
+
+    def add(group, name, note, criteria, fn):
         try:
-            qty = abs(num(row[3]))
-            target = num(sell_target.replace("₩", "").replace("$", ""))
-        except Exception:
-            continue
-        blocks.setdefault(current, []).append((i, persona, qty, target))
-
-    # 같은 인격이 lot 이후에 매도했으면 제외 (이미 체결된 자리)
-    out = {}
-    for name, lots in blocks.items():
-        keep = []
-        for (i, persona, qty, target) in lots:
-            sold_later = persona and any(
-                si > i and sp == persona for si, sp in sells.get(name, []))
-            if not sold_later:
-                keep.append({"qty": qty, "target": target})
-        if keep:
-            out.setdefault(name, {"sell": [], "buy": []})["sell"] = \
-                sorted(keep, key=lambda x: x["target"])
-    for name, lots in buys.items():
-        out.setdefault(name, {"sell": [], "buy": []})["buy"] = \
-            sorted(lots, key=lambda x: x["target"], reverse=True)
-    return out
-
-
-def fetch_target_prices(targets):
-    """목표 추적 종목들의 (전일 종가, 등락률, 통화) 조회: {종목명: (last, pct, cur)}."""
-    prices = {}
-    for name in targets:
-        rt = resolve_ticker(name)
-        if not rt:
-            continue
-        key, kind = rt
-        try:
-            if kind == "kr":
-                s = naver_stock(key)
-                prices[name] = (s["price"], s["pct"], "₩")
-            else:
-                last, pct = prev_change(yf_close(key))
-                prices[name] = (last, pct, "$" if kind == "us" else "₩")
+            value, level = fn()
+            out.append(signal(group, name, value, level, note, criteria))
         except Exception as e:
-            print("목표종목 시세 실패:", name, e)
-    return prices
+            print(name, "실패:", e)
+            out.append(signal(group, name, "—", "na", note, criteria))
+
+    # ── 심리 ──
+    def vix():
+        v, pct = prev_change(yf_close("^VIX"))
+        lv = "ok" if v < 20 else ("warn" if v < 30 else "danger")
+        return f"{v:.2f} {sign(pct)}", lv
+    add("심리", "공포지수 VIX",
+        "S&P500 옵션 가격에서 뽑아낸 '향후 30일 예상 흔들림'. 시장의 체온계라고 보면 됩니다.",
+        "20 미만 안정 · 20~30 주의 · 30 이상 위험", vix)
+
+    def vix_term():
+        ratio = yf_last("^VIX") / yf_last("^VIX3M")
+        lv = "ok" if ratio < 0.9 else ("warn" if ratio < 1.0 else "danger")
+        return f"{ratio:.2f}", lv
+    add("심리", "VIX 기간구조 (VIX ÷ VIX3M)",
+        "평소엔 '먼 미래'가 더 불안해 1보다 작습니다. 1을 넘으면 '지금 당장'이 더 무섭다는 뜻 — 급락장의 전형적 신호.",
+        "0.9 미만 안정 · 0.9~1.0 주의 · 1.0 이상 위험", vix_term)
+
+    def fear_greed():
+        score, rating = cnn_fear_greed()
+        if score < 25:
+            lv = "danger"
+        elif score < 45 or score >= 75:
+            lv = "warn"
+        else:
+            lv = "ok"
+        rating_ko = {"extreme fear": "극단적 공포", "fear": "공포", "neutral": "중립",
+                     "greed": "탐욕", "extreme greed": "극단적 탐욕"}.get(rating.lower(), rating)
+        return f"{score:.0f} ({rating_ko})", lv
+    add("심리", "CNN 공포·탐욕 지수",
+        "7개 시장 지표를 0~100으로 합친 투자 심리 온도계. 너무 낮으면 투매, 너무 높으면 과열(되돌림 위험)입니다.",
+        "25 미만 위험 · 25~45 주의 · 45~75 안정 · 75 이상 과열 주의", fear_greed)
+
+    # ── 추세 (1년치 종가 한 번씩만 받아 재사용) ──
+    spx = ndx = None
+    try:
+        spx = yf_close("^GSPC", "1y")
+    except Exception as e:
+        print("S&P500 1년 조회 실패:", e)
+    try:
+        ndx = yf_close("^IXIC", "1y")
+    except Exception as e:
+        print("나스닥 1년 조회 실패:", e)
+
+    def ma200():
+        last, ma = float(spx.iloc[-1]), float(spx.iloc[-200:].mean())
+        gap = (last / ma - 1) * 100
+        lv = "danger" if gap < 0 else ("warn" if gap < 3 or gap >= 15 else "ok")
+        return f"{last:,.0f} (200일선 대비 {gap:+.1f}%)", lv
+    add("추세", "S&P500 vs 200일 이동평균",
+        "200일선은 '1년 가까운 평균 가격'. 주가가 이 선 아래로 내려가면 장기 추세가 꺾였다고 봅니다. 너무 멀리 위에 있어도 과열.",
+        "+3~15% 안정 · 0~3% 또는 15% 이상 주의 · 선 아래 위험", ma200)
+
+    def drawdown(close):
+        last, high = float(close.iloc[-1]), float(close.max())
+        dd = (last / high - 1) * 100
+        lv = "ok" if dd > -5 else ("warn" if dd > -10 else "danger")
+        return f"{dd:+.1f}% (고점 {high:,.0f})", lv
+    add("추세", "S&P500 52주 고점 대비 낙폭",
+        "최근 1년 최고점에서 얼마나 내려왔나. -10%는 '조정', -20%는 '약세장'이라고 부릅니다.",
+        "-5% 이내 안정 · -5~-10% 주의 · -10% 이상 위험", lambda: drawdown(spx))
+    add("추세", "나스닥 52주 고점 대비 낙폭",
+        "기술주 비중이 큰 나스닥은 S&P500보다 먼저, 더 크게 흔들리는 경향이 있습니다.",
+        "-5% 이내 안정 · -5~-10% 주의 · -10% 이상 위험", lambda: drawdown(ndx))
+
+    # ── 신용·금리 ──
+    def t10y2y():
+        v, d = fred_last("T10Y2Y")
+        lv = "danger" if v < 0 else ("warn" if v < 0.5 else "ok")
+        return f"{v:+.2f}%p <small>({d})</small>", lv
+    add("신용·금리", "장단기 금리차 (10년 − 2년)",
+        "정상이라면 오래 빌려줄수록 이자가 높습니다. 이게 뒤집히면(역전) 시장이 경기 침체를 예상한다는 뜻 — 역전 해소 직후가 오히려 위험했던 적이 많습니다.",
+        "0.5%p 이상 안정 · 0~0.5%p 주의 · 마이너스(역전) 위험", t10y2y)
+
+    def t10y3m():
+        v = yf_last("^TNX") - yf_last("^IRX")
+        lv = "danger" if v < 0 else ("warn" if v < 0.5 else "ok")
+        return f"{v:+.2f}%p", lv
+    add("신용·금리", "장단기 금리차 (10년 − 3개월)",
+        "미 연준이 경기침체 예측에 가장 신뢰하는 금리차. 10년−2년과 함께 보면 신호가 더 선명해집니다.",
+        "0.5%p 이상 안정 · 0~0.5%p 주의 · 마이너스(역전) 위험", t10y3m)
+
+    def hy_spread():
+        v, d = fred_last("BAMLH0A0HYM2")
+        lv = "ok" if v < 4 else ("warn" if v < 6 else "danger")
+        return f"{v:.2f}%p <small>({d})</small>", lv
+    add("신용·금리", "하이일드 채권 스프레드",
+        "신용등급 낮은 회사가 국채보다 이자를 얼마나 더 줘야 돈을 빌릴 수 있나. 벌어지면 '돈 빌려주기 무섭다'는 신호로, 주식보다 먼저 움직이곤 합니다.",
+        "4%p 미만 안정 · 4~6%p 주의 · 6%p 이상 위험", hy_spread)
+
+    # ── 경기·밸류에이션 ──
+    def sahm():
+        v, d = fred_last("SAHMREALTIME")
+        lv = "ok" if v < 0.3 else ("warn" if v < 0.5 else "danger")
+        return f"{v:.2f}%p <small>({d[:7]})</small>", lv
+    add("경기·밸류에이션", "삼의 법칙 (실업률)",
+        "최근 3개월 평균 실업률이 지난 1년 최저치보다 0.5%p 이상 오르면 경기침체가 시작됐다고 보는 규칙. 월 1회 갱신.",
+        "0.3%p 미만 안정 · 0.3~0.5%p 주의 · 0.5%p 이상 위험", sahm)
+
+    def cape():
+        v = shiller_cape()
+        lv = "ok" if v < 25 else ("warn" if v < 35 else "danger")
+        return f"{v:.1f}배", lv
+    add("경기·밸류에이션", "실러 CAPE (경기조정 PER)",
+        "최근 10년 평균 이익(물가 반영) 대비 주가 수준. 당장의 하락 신호라기보다 '떨어질 때 얼마나 아플 수 있나'를 보여주는 장기 지표 (역사적 평균 약 17배).",
+        "25배 미만 안정 · 25~35배 주의 · 35배 이상 위험(고평가)", cape)
+
+    us_date = spx.index[-1].strftime("%Y-%m-%d") if spx is not None and len(spx) else ""
+    return out, us_date
 
 
 # ──────────────────────────────────────────────
@@ -237,8 +254,8 @@ def fetch_target_prices(targets):
 # ──────────────────────────────────────────────
 def naver_fx_last():
     try:
-        j = naver_json("https://m.stock.naver.com/front-api/marketIndex/prices"
-                       "?category=exchange&reutersCode=FX_USDKRW&page=1&pageSize=10")
+        j = http_json("https://m.stock.naver.com/front-api/marketIndex/prices"
+                      "?category=exchange&reutersCode=FX_USDKRW&page=1&pageSize=10")
         first = j["result"][0]
         return num(first["closePrice"]), str(first["localTradedAt"])[:10]
     except Exception as e:
@@ -284,75 +301,58 @@ def li(label, value, warn=False, tooltip=""):
     return f'<li><span class="lbl">{label}</span><span class="val">{mark}{value}</span></li>'
 
 
-def note_li(text):
-    """지표 설명용 보조 텍스트 줄."""
-    return f'<li class="noteline"><span class="note">{text}</span></li>'
-
-
 def sign(pct):
     arrow = "▲" if pct >= 0 else "▼"
     cls = "up" if pct >= 0 else "down"
     return f'<span class="{cls}">{arrow} {abs(pct):.2f}%</span>'
 
 
-def fmt_money(v, cur):
-    return f"${v:,.2f}" if cur == "$" else f"{v:,.0f}원"
+def risk_card(signals):
+    """하락 위험 신호등 카드 HTML과 상단 요약 배너 HTML 반환."""
+    counts = {k: sum(1 for s in signals if s["level"] == k)
+              for k in ("danger", "warn", "ok", "na")}
+    valid = len(signals) - counts["na"]
 
+    if counts["danger"] >= 3:
+        verdict, vcls = "경계 — 위험 신호가 여러 곳에서 켜졌습니다", "danger"
+    elif counts["danger"] >= 1 or counts["warn"] >= 4:
+        verdict, vcls = "주의 — 일부 지표에서 경고등이 켜졌습니다", "warn"
+    else:
+        verdict, vcls = "양호 — 뚜렷한 하락 신호는 없습니다", "ok"
 
-def _qty_txt(qty):
-    if qty is None:
-        return ""
-    return f"{qty:,.4f}".rstrip("0").rstrip(".") if qty < 1 else f"{qty:,.0f}"
+    bar = "".join(
+        f'<span class="seg {k}" style="flex:{counts[k]}"></span>'
+        for k in ("danger", "warn", "ok") if counts[k])
+    summary = (f'<div class="risk-sum {vcls}"><div class="risk-verdict">{verdict}</div>'
+               f'<div class="risk-bar">{bar}</div>'
+               f'<div class="risk-counts"><b class="c-danger">위험 {counts["danger"]}</b> · '
+               f'<b class="c-warn">주의 {counts["warn"]}</b> · '
+               f'<b class="c-ok">안정 {counts["ok"]}</b> / 조회된 {valid}개 지표'
+               + (f' (조회 실패 {counts["na"]})' if counts["na"] else "") +
+               '</div></div>')
 
+    groups_html = []
+    for g, desc in GROUPS:
+        rows = [s for s in signals if s["group"] == g]
+        if not rows:
+            continue
+        items = "".join(
+            f'<div class="sig"><div class="sig-top">'
+            f'<span class="sig-name">{s["name"]}</span>'
+            f'<span class="sig-val">{s["value"]}'
+            f'<span class="badge {s["level"]}">{LEVEL_TEXT[s["level"]]}</span></span></div>'
+            f'<div class="sig-note">{s["note"]}</div>'
+            f'<div class="sig-crit">기준: {s["criteria"]}</div></div>'
+            for s in rows)
+        groups_html.append(f'<div class="sig-group"><h3>{g} <span>· {desc}</span></h3>{items}</div>')
 
-def targets_card(targets, prices):
-    """보유종목 목표 매도/매수가 카드 HTML과 도달 배너 HTML 반환."""
-    if not targets:
-        return "", ""
-    stocks_html_parts, hits = [], []
-    for name, sides in targets.items():
-        p = prices.get(name)
-        if p:
-            last, pct, cur = p
-            head_val = f"전일 종가 {fmt_money(last, cur)} {sign(pct)}"
-        else:
-            last, cur = None, "₩"
-            head_val = "시세 조회 실패"
-        unit = " BTC" if "비트코인" in name else "주"
-        rows = []
-
-        def lot_row(lot, side):
-            qty_txt = _qty_txt(lot.get("qty"))
-            head = f"{qty_txt}{unit} → " if qty_txt else "→ "
-            word = "이상 매도" if side == "sell" else "이하 매수"
-            left = f"{head}{fmt_money(lot['target'], cur)} {word}"
-            if last is not None:
-                if side == "sell":
-                    rate, hit = last / lot["target"] * 100, last >= lot["target"]
-                else:
-                    rate, hit = lot["target"] / last * 100, last <= lot["target"]
-                right = f"달성률 {rate:.1f}%" + (" ✅ 도달" if hit else "")
-                if hit:
-                    w = "매도" if side == "sell" else "매수"
-                    qty_part = f" ({qty_txt}{unit})" if qty_txt else ""
-                    hits.append(f"{name} {w} {fmt_money(lot['target'], cur)}{qty_part}")
-            else:
-                right, hit = "—", False
-            cls = "tgt-row" + (" buy" if side == "buy" else "") + (" hit" if hit else "")
-            return (f'<div class="{cls}">'
-                    f'<span>{left}</span><span>{right}</span></div>')
-
-        for lot in sides.get("sell", []):
-            rows.append(lot_row(lot, "sell"))
-        for lot in sides.get("buy", []):
-            rows.append(lot_row(lot, "buy"))
-        stocks_html_parts.append(
-            f'<div class="tgt-stock"><div class="tgt-head"><span>{name}</span>'
-            f'<span>{head_val}</span></div>{"".join(rows)}</div>')
-    card = (f'<div class="card full"><h2>🎯 보유종목 목표 매도·매수가</h2>'
-            f'{"".join(stocks_html_parts)}</div>')
-    banner = (f'<div class="vbanner vhit">🎯 목표가 도달: {" · ".join(hits)}</div>'
-              if hits else "")
+    card = (f'<div class="card full"><h2>🚨 미국 시장 하락 위험 신호등</h2>'
+            f'{summary}{"".join(groups_html)}'
+            f'<div class="disclaimer">※ 각 지표는 하락을 \'예언\'하지 않습니다. '
+            f'여러 신호가 동시에 켜질 때 대비 수준을 높이는 참고용 체크리스트로 활용하세요.</div></div>')
+    banner = {"danger": '<div class="vbanner vdanger">🚨 하락 위험 신호 다수</div>',
+              "warn": '<div class="vbanner vcaution">⚠️ 하락 주의 신호 있음</div>',
+              "ok": ""}[vcls]
     return card, banner
 
 
@@ -381,7 +381,7 @@ def build_html():
 
     # 핵심 시리즈는 한 번만 받아 등락률·교차검증·날짜표시에 재사용
     series_map = {}
-    for tk in ["^KS11", "KRW=X", "^VIX"]:
+    for tk in ["^KS11", "KRW=X"]:
         try:
             series_map[tk] = yf_close(tk)
         except Exception as e:
@@ -393,6 +393,10 @@ def build_html():
     kr_date = ""
     if series_map.get("^KS11") is not None and len(series_map["^KS11"]):
         kr_date = series_map["^KS11"].index[-1].strftime("%Y-%m-%d")
+
+    # ── 미국 하락 위험 신호등 (핵심) ──
+    signals, us_date = us_risk_signals()
+    r_card, r_banner = risk_card(signals)
 
     # ── 국내 보조지표 ──
     try:
@@ -413,22 +417,8 @@ def build_html():
         parts_kr.append(li("원/달러 환율", f"{last_fx:,.1f} {sign(fx_pct)}", w, tip))
     except Exception as e:
         print("환율 실패:", e)
-    try:
-        k = naver_stock("498400")            # KODEX 200타겟위클리커버드콜
-        parts_kr.append(li("KODEX 200타겟위클리커버드콜",
-                           f"{k['price']:,.0f} {sign(k['pct'])}"))
-    except Exception as e:
-        print("KODEX 커버드콜 실패:", e)
 
     # ── 미국 보조지표 ──
-    try:
-        vix_last, vix_pct = prev_change(series_map["^VIX"])
-        parts_us.append(li("공포지수(VIX)", f"{vix_last:.2f} {sign(vix_pct)}"))
-        parts_us.append(note_li(
-            "VIX는 S&P500 옵션 가격으로 산출한 향후 30일 예상 변동성으로, "
-            "투자자 불안 심리를 나타냅니다. 통상 20 미만이면 안정, 30 이상이면 공포 구간으로 봅니다."))
-    except Exception as e:
-        print("VIX 실패:", e)
     try:
         parts_us.append(li("미 국채 3개월", f"{yf_last('^IRX'):.2f}%"))
     except Exception as e:
@@ -441,22 +431,11 @@ def build_html():
         parts_us.append(li("달러인덱스(DXY)", f"{yf_last('DX-Y.NYB'):.2f}"))
     except Exception as e:
         print("달러인덱스 실패:", e)
-    try:
-        tqqq_last, tqqq_pct = prev_change(yf_close("TQQQ"))
-        parts_us.append(li("TQQQ (나스닥100 3배)", f"${tqqq_last:,.2f} {sign(tqqq_pct)}"))
-    except Exception as e:
-        print("TQQQ 실패:", e)
-
-    # ── 보유종목 목표 매도·매수가 (가장 중요 · 시트 읽기 실패 시 섹션 생략) ──
-    try:
-        targets = fetch_targets()
-        tgt_card, tgt_banner = targets_card(targets, fetch_target_prices(targets))
-    except Exception as e:
-        print("목표가 시트 조회 실패:", e)
-        tgt_card, tgt_banner = "", ""
 
     banner = validation_banner(checks)
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    basis = " · ".join(x for x in (f"국내 {kr_date}" if kr_date else "",
+                                   f"미국 {us_date}" if us_date else "") if x)
 
     return f"""<!doctype html>
 <html lang="ko"><head><meta charset="utf-8">
@@ -466,9 +445,9 @@ def build_html():
  *{{box-sizing:border-box}}
  body{{font-family:'Pretendard',system-ui,sans-serif;background:#f5f6f8;color:#1a1a2e;margin:0;padding:24px}}
  h1{{font-size:22px;margin:0 0 4px}} .stamp{{color:#888;font-size:13px;margin-bottom:10px}}
- .vbanner{{display:inline-block;font-size:13px;padding:6px 12px;border-radius:8px;margin-bottom:16px}}
+ .vbanner{{display:inline-block;font-size:13px;padding:6px 12px;border-radius:8px;margin:0 6px 16px 0}}
  .vok{{background:#e8f5ec;color:#1d7a3d}} .vwarn{{background:#fdf0e0;color:#a05c00}}
- .vhit{{background:#fff3cd;color:#8a6100;font-weight:700;margin-left:6px}}
+ .vcaution{{background:#fff3cd;color:#8a6100;font-weight:700}} .vdanger{{background:#fde8e8;color:#b42318;font-weight:700}}
  .grid{{display:grid;grid-template-columns:1fr 1fr;gap:18px;max-width:840px}}
  .card{{background:#fff;border-radius:16px;padding:22px;box-shadow:0 2px 10px rgba(0,0,0,.05)}}
  .card h2{{font-size:17px;margin:0 0 14px;padding-bottom:10px;border-bottom:2px solid #2c5fd0}}
@@ -476,28 +455,40 @@ def build_html():
  ul{{list-style:none;margin:0;padding:0}} li{{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid #f0f0f3;font-size:14px}}
  .lbl{{color:#555}} .val{{font-weight:600;text-align:right}}
  .up{{color:#d23f3f}} .down{{color:#2c5fd0}} .warn{{cursor:help}}
- .noteline{{padding:4px 0 9px}} .note{{color:#999;font-size:12px;font-weight:400;line-height:1.5;text-align:left}}
- .tgt-stock{{margin-bottom:16px}} .tgt-stock:last-child{{margin-bottom:0}}
- .tgt-head{{display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px;font-weight:700;font-size:15px;padding:8px 0;border-bottom:1px solid #e8e8ee}}
- .tgt-row{{display:flex;justify-content:space-between;flex-wrap:wrap;gap:2px 10px;font-size:14px;padding:7px 0 7px 10px;border-bottom:1px solid #f5f5f8;color:#444}}
- .tgt-row.hit{{background:#fff8e1;font-weight:700;color:#8a6100;border-radius:6px}}
- .tgt-row.buy{{color:#d23f3f}} .tgt-row.buy .up,.tgt-row.buy .down{{color:inherit}}
- .tgt-row span:last-child{{white-space:nowrap}}
+ .risk-sum{{border-radius:12px;padding:14px 16px;margin-bottom:18px;background:#f7f8fa}}
+ .risk-sum.ok{{background:#eef8f1}} .risk-sum.warn{{background:#fff8e6}} .risk-sum.danger{{background:#fdeeee}}
+ .risk-verdict{{font-weight:700;font-size:15px;margin-bottom:10px}}
+ .risk-bar{{display:flex;height:10px;border-radius:5px;overflow:hidden;gap:2px;margin-bottom:8px}}
+ .seg.danger{{background:#d92d20}} .seg.warn{{background:#f5a524}} .seg.ok{{background:#2e9e5b}}
+ .risk-counts{{font-size:13px;color:#555}}
+ .c-danger{{color:#b42318}} .c-warn{{color:#a05c00}} .c-ok{{color:#1d7a3d}}
+ .sig-group{{margin-bottom:18px}} .sig-group:last-of-type{{margin-bottom:8px}}
+ .sig-group h3{{font-size:15px;margin:0 0 4px;color:#2c5fd0}} .sig-group h3 span{{font-size:12px;color:#999;font-weight:400}}
+ .sig{{padding:10px 0;border-bottom:1px solid #f0f0f3}}
+ .sig-top{{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px 12px;font-size:14px}}
+ .sig-name{{font-weight:600}} .sig-val{{font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}}
+ .sig-val small{{color:#999;font-weight:400}}
+ .sig-note{{color:#777;font-size:12px;line-height:1.55;margin-top:5px}}
+ .sig-crit{{color:#aaa;font-size:11.5px;margin-top:3px}}
+ .badge{{font-size:12px;font-weight:700;padding:2px 9px;border-radius:999px;white-space:nowrap}}
+ .badge.ok{{background:#e3f4e9;color:#1d7a3d}} .badge.warn{{background:#fff0d1;color:#a05c00}}
+ .badge.danger{{background:#fde1df;color:#b42318}} .badge.na{{background:#eee;color:#888}}
+ .disclaimer{{color:#999;font-size:12px;line-height:1.5;margin-top:6px}}
  @media(max-width:680px){{
    body{{padding:14px}}
    .grid{{grid-template-columns:1fr;gap:14px}}
    .card{{padding:16px;border-radius:14px}}
    h1{{font-size:20px}}
-   li,.tgt-row{{font-size:13px}} .tgt-head{{font-size:14px}}
+   li,.sig-top{{font-size:13px}}
  }}
 </style></head><body>
 <h1>📊 일일 시장 리포트</h1>
-<div class="stamp">생성 {stamp} · {kr_date} 영업일 기준 · 등락률은 전일 대비</div>
-{banner}{tgt_banner}
+<div class="stamp">생성 {stamp} · {basis} 기준 · 등락률은 전일 대비</div>
+{banner}{r_banner}
 <div class="grid">
-  {tgt_card}
+  {r_card}
   <div class="card"><h2>🇰🇷 국내 지표</h2><ul>{''.join(parts_kr)}</ul></div>
-  <div class="card"><h2>🇺🇸 미국 지표</h2><ul>{''.join(parts_us)}</ul></div>
+  <div class="card"><h2>🇺🇸 미국 금리·달러</h2><ul>{''.join(parts_us)}</ul></div>
 </div>
 </body></html>"""
 
