@@ -2,7 +2,7 @@
 """
 일일 시장 리포트 생성기
 - 핵심: 🚨 미국 시장 하락 위험 신호등 — 시장 참여자들이 가장 많이 보는 지표를
-        심리 / 추세 / 신용·금리 / 경기·밸류에이션 4개 묶음으로 보여주고
+        심리 / 추세 / 금리 / 경기·밸류에이션 4개 묶음으로 보여주고
         지표마다 안정·주의·위험 신호를 붙인다.
 - 보조 지표: 국고채 3년·CD 91일, 원/달러 환율 / 미 국채 3개월·10년, 달러인덱스
 - 등락률: 전일(직전 영업일) 대비
@@ -129,31 +129,6 @@ BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/140.0 Safari/537.36")
 
 
-def fred_last(series_id):
-    """FRED 최신 관측값: (값, 'YYYY-MM-DD'). 결측치('.')는 건너뛴다.
-    환경변수 FRED_API_KEY가 있으면 공식 API(api.stlouisfed.org)를,
-    없으면 키 불필요 CSV(fred.stlouisfed.org — GitHub Actions에서 막히는 경우가 많음)를 쓴다."""
-    start = (datetime.date.today() - datetime.timedelta(days=400)).isoformat()
-    key = os.environ.get("FRED_API_KEY", "").strip()
-    if key:
-        j = http_json("https://api.stlouisfed.org/fred/series/observations"
-                      f"?series_id={series_id}&api_key={key}&file_type=json"
-                      f"&observation_start={start}&sort_order=desc&limit=10", redact=key)
-        for o in j["observations"]:
-            if o["value"] not in ("", "."):
-                return float(o["value"]), o["date"]
-        raise ValueError(f"FRED {series_id} 값 없음")
-    r = HTTP.get(f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}&cosd={start}",
-                 timeout=25, headers={"User-Agent": BROWSER_UA, "Accept": "text/csv,*/*"})
-    r.raise_for_status()
-    for line in reversed(r.text.strip().splitlines()[1:]):
-        d, _, v = line.partition(",")
-        v = v.strip()
-        if v and v != ".":
-            return float(v), d.strip()
-    raise ValueError(f"FRED {series_id} 값 없음")
-
-
 def sahm_rule():
     """삼의 법칙 값을 미 노동통계국(BLS) 실업률(LNS14000000, 계절조정)로 직접 계산:
     최근 3개월 평균 실업률 − 직전 12개월 동안의 3개월 평균 중 최저치. 반환 (값, 'YYYY-MM')."""
@@ -241,7 +216,7 @@ LEVEL_TEXT = {"ok": "안정", "warn": "주의", "danger": "위험", "na": "조�
 GROUPS = [
     ("심리", "시장 참여자들이 얼마나 겁먹었나"),
     ("추세", "주가가 이미 꺾이고 있나"),
-    ("신용·금리", "돈줄이 조이고 있나"),
+    ("금리", "채권시장은 경기침체를 예상하나"),
     ("경기·밸류에이션", "경기와 가격 수준은 버틸 만한가"),
 ]
 
@@ -287,11 +262,6 @@ INFO = {
         "미국 10년 만기 국채 금리에서 3개월 만기 국채 금리를 뺀 값입니다.",
         "뉴욕 연방준비은행의 경기침체 확률 모델이 쓰는 금리차입니다. 3개월물은 현재 기준금리를 거의 그대로 반영하므로, "
         "'지금의 통화정책이 장기 경제 전망에 비해 얼마나 빡빡한가'를 보여줍니다. 10년−2년과 함께 보면 신호가 더 선명해집니다."),
-    "하이일드 채권 스프레드": (
-        "신용등급 BB 이하(투기등급) 미국 회사채 금리가 같은 만기 국채 금리보다 얼마나 높은지입니다(ICE BofA 지수, FRED 공시).",
-        "돈을 빌려주는 사람들이 기업 부실을 얼마나 걱정하는지 보여주는 '신용시장의 공포지수'입니다. "
-        "채권 투자자는 주식 투자자보다 먼저 위험을 감지하는 경향이 있어, 스프레드가 빠르게 벌어지면 주가 하락의 선행 신호가 됩니다. "
-        "2008년 금융위기 때는 20%p, 2020년 코로나 때는 10%p를 넘었습니다."),
     "삼의 법칙 (실업률)": (
         "최근 3개월 평균 실업률에서 직전 12개월 중 가장 낮았던 3개월 평균 실업률을 뺀 값입니다. "
         "연준 이코노미스트 출신 클로디아 삼(Claudia Sahm)이 만들었습니다(미 노동통계국 실업률로 계산).",
@@ -416,7 +386,7 @@ def us_risk_signals():
     add("추세", "나스닥 52주 고점 대비 낙폭",
         "-5% 이내 안정 · -5~-10% 주의 · -10% 이상 위험", lambda: drawdown(ndx))
 
-    # ── 신용·금리 ──
+    # ── 금리 ──
     def spread(long_k, short_k):
         cur, d, _ = treasury_curve()
         v = cur[long_k] - cur[short_k]
@@ -432,18 +402,11 @@ def us_risk_signals():
             lv = "danger" if v < 0 else ("warn" if v < 0.5 else "ok")
             return f"{v:+.2f}%p", lv
 
-    add("신용·금리", "장단기 금리차 (10년 − 2년)",
+    add("금리", "장단기 금리차 (10년 − 2년)",
         "0.5%p 이상 안정 · 0~0.5%p 주의 · 마이너스(역전) 위험",
         lambda: spread("10 Yr", "2 Yr"))
-    add("신용·금리", "장단기 금리차 (10년 − 3개월)",
+    add("금리", "장단기 금리차 (10년 − 3개월)",
         "0.5%p 이상 안정 · 0~0.5%p 주의 · 마이너스(역전) 위험", t10y3m)
-
-    def hy_spread():
-        v, d = fred_last("BAMLH0A0HYM2")
-        lv = "ok" if v < 4 else ("warn" if v < 6 else "danger")
-        return f"{v:.2f}%p <small>({d})</small>", lv
-    add("신용·금리", "하이일드 채권 스프레드",
-        "4%p 미만 안정 · 4~6%p 주의 · 6%p 이상 위험", hy_spread)
 
     # ── 경기·밸류에이션 ──
     def sahm():
