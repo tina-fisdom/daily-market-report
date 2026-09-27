@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Seoul          # '생성' 시각을 한국 시간으로 표시
+      ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}   # 선택: 한국은행 ECOS (없으면 공개 sample 키)
     permissions:
       contents: write
     steps:
