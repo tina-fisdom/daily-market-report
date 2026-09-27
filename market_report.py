@@ -29,10 +29,16 @@ HTTP.trust_env = False          # 로컬 .netrc 간섭 회피
 HTTP.headers.update({"User-Agent": "Mozilla/5.0"})
 
 
-def http_json(url, **kw):
-    r = HTTP.get(url, timeout=15, **kw)
-    r.raise_for_status()
-    return r.json()
+def http_json(url, redact=None, **kw):
+    """GET → JSON. redact: URL에 들어간 API 키 — 실패 시 오류 메시지(로그)에서 가린다."""
+    try:
+        r = HTTP.get(url, timeout=15, **kw)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        if redact:
+            raise RuntimeError(str(e).replace(redact, "***")) from None
+        raise
 
 
 def num(s):
@@ -75,7 +81,7 @@ def _ecos_rate(item):
     end = datetime.date.today()
     start = end - datetime.timedelta(days=14)
     j = http_json(f"https://ecos.bok.or.kr/api/StatisticSearch/{key}/json/kr/1/10/"
-                  f"817Y002/D/{start:%Y%m%d}/{end:%Y%m%d}/{item}")
+                  f"817Y002/D/{start:%Y%m%d}/{end:%Y%m%d}/{item}", redact=key)
     rows = j["StatisticSearch"]["row"]
     last = rows[-1]
     t = last["TIME"]
@@ -132,7 +138,7 @@ def fred_last(series_id):
     if key:
         j = http_json("https://api.stlouisfed.org/fred/series/observations"
                       f"?series_id={series_id}&api_key={key}&file_type=json"
-                      f"&observation_start={start}&sort_order=desc&limit=10")
+                      f"&observation_start={start}&sort_order=desc&limit=10", redact=key)
         for o in j["observations"]:
             if o["value"] not in ("", "."):
                 return float(o["value"]), o["date"]
