@@ -1,0 +1,213 @@
+<title>HSP 자가 진단</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&family=Gowun+Dodum&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* Layout: 한 줄 문항 리스트(왼쪽) + 실시간 결과 패널(오른쪽, 모바일은 아래). 조용한 안개빛 톤, 강조는 깊은 청록 하나 */
+:root{
+  --bg:#f4fbfa; --surface:#ffffff; --fg:#22343a; --muted:#5f777d; --line:#d5e9e7;
+  --accent:#1fa39c; --accent-soft:#d9f3f0; --yes:#1fa39c; --no:#a3b4b8;
+  color-scheme:light;
+  --f-display:"Gowun Batang","Noto Serif KR",serif;
+  --f-body:"Gowun Dodum","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+/* 항상 밝은 테마로 고정 */
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:15px;line-height:1.6}
+.wrap{max-width:1080px;margin:0 auto;padding-block:40px 64px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+header{display:grid;gap:10px;margin-bottom:28px;max-width:44rem}
+.eyebrow{font-family:var(--f-mono);font-size:12px;letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
+h1{font-family:var(--f-display);font-size:clamp(28px,5vw,40px);line-height:1.25;margin:0;text-wrap:balance}
+header p{margin:0;color:var(--muted)}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:32px;align-items:start}
+@media (max-width:860px){.grid{grid-template-columns:minmax(0,1fr)}}
+.group{margin-bottom:28px}
+.group h2{font-family:var(--f-display);font-size:19px;margin:0 0 4px}
+.group .gdesc{color:var(--muted);font-size:13.5px;margin:0 0 10px}
+ol{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+li.q{display:grid;grid-template-columns:2.4rem minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}
+.num{font-family:var(--f-mono);font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.qt{min-width:0}
+.seg{display:flex;border:1px solid var(--line);border-radius:999px;overflow:hidden;background:var(--surface)}
+.seg button{all:unset;cursor:pointer;padding:6px 14px;font-size:14px;color:var(--muted)}
+.seg button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.seg button[aria-pressed="true"].y{background:var(--yes);color:var(--bg)}
+.seg button[aria-pressed="true"].n{background:var(--no);color:var(--bg)}
+li.q.done .qt{color:var(--fg)}
+li.q:not(.done) .qt{color:var(--fg)}
+aside{position:sticky;top:calc(env(safe-area-inset-top,0px) + 16px);background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:22px;display:grid;gap:18px;box-shadow:0 6px 24px rgba(31,163,156,.10)}
+@media (max-width:860px){aside{position:static}}
+.score{display:flex;align-items:baseline;gap:8px}
+.score b{font-family:var(--f-display);font-size:52px;line-height:1;font-variant-numeric:tabular-nums}
+.score span{color:var(--muted)}
+.label{font-family:var(--f-mono);font-size:11.5px;letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
+.gauge{position:relative;height:10px;background:var(--accent-soft);border-radius:5px}
+.gauge .fill{position:absolute;inset:0 auto 0 0;background:var(--accent);border-radius:5px;transition:width .3s}
+.gauge .mark{position:absolute;top:-5px;bottom:-5px;width:2px;background:var(--fg)}
+.ticks{display:flex;justify-content:space-between;font-family:var(--f-mono);font-size:11px;color:var(--muted);margin-top:6px;position:relative}
+.ticks .t14{position:absolute;transform:translateX(-50%)}
+.verdict{font-family:var(--f-display);font-size:18px;line-height:1.45;margin:0}
+.verdict-sub{margin:4px 0 0;color:var(--muted);font-size:14px}
+.factors{display:grid;gap:10px}
+.f-row{display:grid;grid-template-columns:7.5rem minmax(0,1fr) 3rem;gap:10px;align-items:center;font-size:13.5px}
+.f-bar{height:6px;background:var(--accent-soft);border-radius:3px;overflow:hidden}
+.f-bar i{display:block;height:100%;background:var(--accent);transition:width .3s}
+.f-val{font-family:var(--f-mono);font-size:12px;text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+.progress{font-size:13px;color:var(--muted)}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+.btn{all:unset;cursor:pointer;font-size:13.5px;padding:7px 14px;border:1px solid var(--line);border-radius:8px;color:var(--fg)}
+.btn:focus-visible{outline:2px solid var(--accent)}
+.note{font-size:12.5px;color:var(--muted);border-top:1px solid var(--line);padding-top:14px;margin:0}
+details.arch{margin-top:8px;border-top:1px solid var(--line);padding-top:18px}
+details.arch summary{cursor:pointer;font-family:var(--f-display);font-size:17px}
+.archgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:14px}
+.archgrid div{border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--surface);font-size:13.5px}
+.archgrid h3{margin:0 0 6px;font-size:14px;font-family:var(--f-display)}
+.archgrid p{margin:0;color:var(--muted)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Elaine N. Aron · HSP Self-Test · 27문항</div>
+    <h1>나는 매우 예민한 사람(HSP)일까?</h1>
+    <p>각 문항이 나에게 대체로 맞으면 ‘예’, 별로 맞지 않으면 ‘아니오’를 고르세요. 오른쪽 결과가 바로 바뀝니다. 응답은 이 브라우저에만 저장됩니다.</p>
+  </header>
+
+  <div class="grid">
+    <main id="list"></main>
+
+    <aside aria-live="polite">
+      <div>
+        <div class="label">‘예’ 응답 수</div>
+        <div class="score"><b id="yes">0</b><span>/ 27</span></div>
+      </div>
+      <div>
+        <div class="gauge"><div class="fill" id="fill" style="width:0%"></div><div class="mark" style="left:calc(14/27*100%)"></div></div>
+        <div class="ticks"><span>0</span><span class="t14" style="left:calc(14/27*100%)">14</span><span>27</span></div>
+      </div>
+      <div>
+        <p class="verdict" id="verdict">문항에 답하면 결과가 나타납니다.</p>
+        <p class="verdict-sub" id="verdictSub"></p>
+      </div>
+      <div class="factors">
+        <div class="label">영역별 ‘예’ 비율</div>
+        <div id="factorRows"></div>
+      </div>
+      <div class="progress" id="progress">0 / 27 문항 응답</div>
+      <div class="actions">
+        <button class="btn" id="reset" type="button">응답 지우기</button>
+      </div>
+      <p class="note">아론 박사의 기준: 14개 이상 ‘예’면 HSP일 가능성이 높습니다. 다만 ‘예’가 적어도 그 몇 개가 극단적으로 맞는다면 HSP일 수 있습니다. 의학적 진단이 아닌 자기이해용 도구입니다.</p>
+    </aside>
+  </div>
+
+  <details class="arch">
+    <summary>이 테스트의 구조 보기</summary>
+    <div class="archgrid">
+      <div><h3>1. 문항 데이터</h3><p>27문항을 id·문장·영역 코드로 정의한 배열. 문항만 바꾸면 다른 자가진단에도 재사용됩니다.</p></div>
+      <div><h3>2. 응답 상태</h3><p>{문항번호: 예/아니오} 객체 하나. 클릭할 때마다 갱신하고 브라우저 저장소에 보관합니다.</p></div>
+      <div><h3>3. 채점 엔진</h3><p>총점(‘예’ 개수)과 영역별 비율을 계산. 기준점 14는 상수 하나로 분리했습니다.</p></div>
+      <div><h3>4. 해석 규칙</h3><p>미응답 / 0–6 / 7–13 / 14–20 / 21–27 구간별 해석 문구와 가장 높은 영역 코멘트.</p></div>
+      <div><h3>5. 화면</h3><p>영역별 문항 리스트 + 실시간 결과 패널(점수, 게이지, 영역 막대).</p></div>
+    </div>
+  </details>
+</div>
+
+<script>
+const THRESHOLD = 14;
+const FACTORS = {
+  EOE:{name:'쉽게 압도됨', desc:'자극·변화·압박이 많을 때 금방 지치고 흔들리는 정도'},
+  LST:{name:'감각 민감성', desc:'빛·소리·냄새·통증·카페인 같은 감각 자극에 대한 낮은 문턱'},
+  AES:{name:'섬세한 감수성', desc:'예술·미묘한 변화·내면세계를 깊이 느끼고 알아차리는 힘'},
+  ETC:{name:'성장 배경', desc:'어린 시절 주변에서 본 나의 모습'}
+};
+const Q = [
+  [1,'강한 감각 자극에 쉽게 압도되는가?','LST'],
+  [2,'주변 환경의 미세한 변화를 잘 알아차리는가?','AES'],
+  [3,'다른 사람의 기분이 나에게 영향을 미치는가?','EOE'],
+  [4,'통증에 더 민감한 편인가?','LST'],
+  [5,'바쁜 하루를 보낸 후 침대나 어두운 방처럼 혼자만의 시간이 필요한가?','EOE'],
+  [6,'카페인의 영향에 특히 민감한가?','LST'],
+  [7,'밝은 빛, 강한 냄새, 거친 천, 가까운 사이렌 소리 등에 쉽게 압도되는가?','LST'],
+  [8,'풍부하고 복잡한 내면 세계를 가지고 있는가?','AES'],
+  [9,'큰 소리에 불편함을 느끼는가?','LST'],
+  [10,'예술이나 음악에 깊이 감동받는가?','AES'],
+  [11,'신경계가 너무 지쳐서 혼자 있어야만 할 때가 있는가?','EOE'],
+  [12,'성실한(양심적인) 편인가?','AES'],
+  [13,'쉽게 놀라는가?','EOE'],
+  [14,'짧은 시간에 할 일이 많으면 정신이 흐트러지는가?','EOE'],
+  [15,'사람들이 물리적 환경에서 불편해할 때, 무엇을 바꿔야 편해질지(조명·좌석 등) 잘 아는가?','AES'],
+  [16,'사람들이 한꺼번에 여러 가지를 시키면 짜증이 나는가?','EOE'],
+  [17,'실수하거나 잊어버리지 않으려고 애쓰는가?','EOE'],
+  [18,'폭력적인 영화나 TV 프로그램을 일부러 피하는가?','EOE'],
+  [19,'주변에 일이 많이 벌어지면 불쾌하게 각성되는가?','EOE'],
+  [20,'배가 매우 고프면 집중력이나 기분이 크게 흐트러지는가?','EOE'],
+  [21,'삶의 변화가 나를 크게 흔드는가?','EOE'],
+  [22,'섬세하거나 미묘한 향, 맛, 소리, 예술작품을 알아차리고 즐기는가?','AES'],
+  [23,'한꺼번에 많은 일이 벌어지는 것이 불쾌한가?','EOE'],
+  [24,'불쾌하거나 압도적인 상황을 피하려고 삶을 미리 조정하는 것을 우선시하는가?','EOE'],
+  [25,'시끄러운 소리나 혼란스러운 장면 같은 강한 자극에 시달리는가?','LST'],
+  [26,'경쟁하거나 관찰당하는 상황에서 너무 긴장해서 평소보다 훨씬 못하게 되는가?','EOE'],
+  [27,'어릴 때 부모나 선생님이 나를 예민하거나 소심하다고 봤는가?','ETC']
+];
+const KEY='hsp-answers-v1';
+let ans={};
+try{ans=JSON.parse(localStorage.getItem(KEY)||'{}')||{}}catch(e){ans={}}
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(ans))}catch(e){}};
+
+const list=document.getElementById('list');
+['EOE','LST','AES','ETC'].forEach(code=>{
+  const items=Q.filter(q=>q[2]===code);
+  const sec=document.createElement('section');sec.className='group';
+  sec.innerHTML=`<h2>${FACTORS[code].name} <span class="num">· ${items.length}문항</span></h2><p class="gdesc">${FACTORS[code].desc}</p>`;
+  const ol=document.createElement('ol');
+  items.forEach(([id,text])=>{
+    const li=document.createElement('li');li.className='q';li.dataset.id=id;
+    li.innerHTML=`<span class="num">${String(id).padStart(2,'0')}</span><span class="qt">${text}</span>
+      <span class="seg" role="group" aria-label="${id}번 응답"><button type="button" class="y" id="q${id}y" aria-pressed="false">예</button><button type="button" class="n" id="q${id}n" aria-pressed="false">아니오</button></span>`;
+    li.querySelector('.y').onclick=()=>set(id,true);
+    li.querySelector('.n').onclick=()=>set(id,false);
+    ol.appendChild(li);
+  });
+  sec.appendChild(ol);list.appendChild(sec);
+});
+
+function set(id,v){ if(ans[id]===v) delete ans[id]; else ans[id]=v; save(); render(); }
+
+function interpret(yes,answered){
+  if(answered===0) return ['문항에 답하면 결과가 나타납니다.',''];
+  const partial = answered<27 ? ` (현재 ${answered}문항 기준)` : '';
+  if(yes>=21) return ['매우 예민한 사람(HSP)일 가능성이 아주 높아요.'+partial,'자극을 깊게 처리하는 기질이 뚜렷합니다. 회복 시간을 일정에 먼저 넣어 두는 것이 좋아요.'];
+  if(yes>=THRESHOLD) return ['HSP일 가능성이 높아요.'+partial,'아론 박사의 기준(14개 이상)을 넘었습니다. 약점이 아니라 정보를 깊게 처리하는 기질로 이해해 보세요.'];
+  if(yes>=7) return ['예민함이 중간 정도예요.'+partial,'특정 영역에서만 민감할 수 있어요. 아래 영역별 비율을 확인해 보세요.'];
+  return ['HSP 성향은 낮은 편이에요.'+partial,'자극에 비교적 덜 영향받는 편입니다. 다만 몇 문항이 아주 강하게 맞는다면 그 부분은 따로 살펴보세요.'];
+}
+
+const fr=document.getElementById('factorRows');
+function render(){
+  let yes=0,answered=0;
+  document.querySelectorAll('li.q').forEach(li=>{
+    const id=+li.dataset.id, v=ans[id];
+    li.querySelector('.y').setAttribute('aria-pressed',v===true);
+    li.querySelector('.n').setAttribute('aria-pressed',v===false);
+    li.classList.toggle('done',v!==undefined);
+    if(v!==undefined)answered++; if(v===true)yes++;
+  });
+  document.getElementById('yes').textContent=yes;
+  document.getElementById('fill').style.width=(yes/27*100)+'%';
+  document.getElementById('progress').textContent=`${answered} / 27 문항 응답`;
+  const [v,s]=interpret(yes,answered);
+  document.getElementById('verdict').textContent=v;
+  document.getElementById('verdictSub').textContent=s;
+  fr.innerHTML=['EOE','LST','AES'].map(code=>{
+    const items=Q.filter(q=>q[2]===code);
+    const y=items.filter(q=>ans[q[0]]===true).length;
+    const pct=Math.round(y/items.length*100);
+    return `<div class="f-row"><span>${FACTORS[code].name}</span><span class="f-bar"><i style="width:${pct}%"></i></span><span class="f-val">${y}/${items.length}</span></div>`;
+  }).join('');
+}
+document.getElementById('reset').onclick=()=>{ans={};save();render();};
+render();
+</script>
